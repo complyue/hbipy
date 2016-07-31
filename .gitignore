@@ -87,3 +87,14 @@ ENV/
 
 # Rope project settings
 .ropeproject
+
+
+# OSX artifacts
+*~
+.DS_Store
+
+# PyCharm private artifacts
+/.idea/workspace.xml
+/.idea/tasks.xml
+/.idea/misc.xml
+/.idea/dictionaries/
