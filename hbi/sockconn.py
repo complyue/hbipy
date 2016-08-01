@@ -1,6 +1,5 @@
 import json
 
-from .buflist import BufferList
 from .conn import *
 from .exceptions import *
 
@@ -18,11 +17,9 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
         )
         return server
 
-    _data_sink = None
-
     def __init__(self, context, addr=None, net_opts=None, **kwargs):
         super().__init__(context=context, addr=addr, net_opts=net_opts, **kwargs)
-        self._chunks = None
+        self._recv_paused = False
         self._hdr_buf = None
         self._hdr_got = 0
         self._bdy_buf = None
@@ -45,7 +42,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
             return '<unwired>'
         if transport.is_closing():
             return '<closing>'
-        return '[' + transport.get_extra_info('sockname') + '] <=> [' + transport.get_extra_info('peername') + ']'
+        return '[{!r}] <=> [{!r}]'.format(transport.get_extra_info('sockname'), transport.get_extra_info('peername'))
 
     def _connect(self):
         assert self.addr, 'should not reach here'
@@ -57,7 +54,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
         async def do_conn():
             try:
                 (transport, protocol) = await self._loop.create_connection(
-                    lambda: self, self.addr.host, self.addr.port, **self.net_opts or {})
+                    lambda: self, self.addr['host'], self.addr['port'], **self.net_opts or {})
             except Exception as exc:
                 waiters = self._conn_waiters
                 self._conn_waiters = deque()
@@ -86,10 +83,10 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
             payload = json.dumps(code)
 
         await self._send_mutex.flowing()
-        self.transport.writelines(
+        self.transport.writelines([
             b'[%d#%s]' % (len(payload), wire_dir),
             payload
-        )
+        ])
 
     async def _send_buffer(self, buf):
         # wait sendable for each single buffer
@@ -97,28 +94,19 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
         self.transport.write(buf)
 
     def _recv_water_pos(self):
-        return self._chunks.nbytes
+        return self._recv_buffer.nbytes
 
     def _pause_recv(self):
+        if self._recv_paused:
+            return
         self.transport.pause_reading()
+        self._recv_paused = True
 
     def _resume_recv(self):
+        if not self._recv_paused:
+            return
         self.transport.resume_reading()
-
-    def _begin_offload(self, sink):
-        if self._data_sink is not None:
-            raise UsageError('already offloading data')
-        self._data_sink = sink
-
-    def _end_offload(self, read_ahead=None, sink=None):
-        if sink is not None and sink is not self._data_sink:
-            raise UsageError('resuming from wrong sink')
-        self._data_sink = None
-        if read_ahead:
-            self._chunks.appendleft(read_ahead)
-        # this should have been called from a receiving loop or coroutine, so return here should allow either continue
-        # processing the recv buffer, or the coroutine proceed
-        pass
+        self._recv_paused = False
 
     def disconnect(self, err_reason=None, destroy_delay=DEFAULT_DISCONNECT_WAIT, transport=None):
         if transport is None:
@@ -127,7 +115,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
             return
         if transport.is_closing():  # already closing
             return
-        self._chunks = None
+        self._recv_buffer.clear()
         self._hdr_got = 0
         self._bdy_buf = None
         self._wire_dir = None
@@ -144,7 +132,6 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
             else:
                 raise asyncio.InvalidStateError('replacing connected transport with new one')
         transport.set_write_buffer_limits(self.high_water_mark_send, self.low_water_mark_send)
-        self._chunks = BufferList()
         self._hdr_buf = bytearray(PACK_HEADER_MAX)
         self._hdr_got = 0
         self._bdy_got = None
@@ -169,23 +156,19 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
 
     def data_received(self, chunk):
         """this is to implement asyncio.Protocol, never call it directly"""
-        if self._chunks is None:
-            # disconnected, ignore and data
-            logger.warn('data received after disconnected', {"data_size": chunk and chunk.nbytes or 0})
-            return
 
         # push to buffer
         if chunk:
-            self._chunks.append(chunk)
+            self._recv_buffer.append(chunk)
 
         # read wire regarding corun/hosting mode and flow ctrl
         self._read_wire()
 
     def _land_one(self):
         while True:
-            if self._chunks.nbytes <= 0:
+            if self._recv_buffer.nbytes <= 0:
                 return None  # no single full packet can be read from buffer
-            chunk = self._chunks.popleft()
+            chunk = self._recv_buffer.popleft()
             if not chunk:
                 continue
             while True:
@@ -240,7 +223,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
                         # put back extra data to buffer
                         if not isinstance(chunk, memoryview):
                             chunk = memoryview(chunk)  # use memoryview to avoid copy on slicing
-                        self._chunks.appendleft(chunk[needs:])
+                        self._recv_buffer.appendleft(chunk[needs:])
                     payload = self._bdy_buf.decode('utf-8')
                     self._bdy_buf = None
                     self._bdy_got = 0

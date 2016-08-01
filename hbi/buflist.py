@@ -9,7 +9,8 @@ class BufferList:
             return
         entry = [buf, None]
         if self.nbytes == 0:
-            self.head = self.tail = entry
+            self.head = entry
+            self.tail = entry
         else:
             self.tail[1] = entry
             self.tail = entry
@@ -34,7 +35,7 @@ class BufferList:
             self.nbytes = 0
         else:
             self.head = self.head[1]
-        self.nbytes -= len(ret)
+            self.nbytes -= len(ret)
         return ret
 
     def clear(self):

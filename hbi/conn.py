@@ -4,6 +4,7 @@ import inspect
 import logging
 from collections import deque
 
+from .buflist import BufferList
 from .context import run_in_context
 from .exceptions import *
 from .sendctrl import SendCtrl
@@ -22,29 +23,37 @@ DEFAULT_DISCONNECT_WAIT = 30
 class AbstractHBIC:
     @staticmethod
     def cast_to_send_buffer(boc):
-        if isinstance(boc, bytearray):
+        if isinstance(boc, (bytes, bytearray)):
             # it's a bytearray
             return boc
-        elif isinstance(boc, memoryview):
-            # it's a memoryview
-            if boc.itemsize != 1:
-                return boc.cast('B')
-            return boc
-        return None
+        if not isinstance(boc, memoryview):
+            try:
+                boc = memoryview(boc)
+            except TypeError:
+                return None
+        # it's a memoryview
+        if boc.itemsize != 1:
+            return boc.cast('B')
+        return boc
 
     @staticmethod
     def cast_to_recv_buffer(boc):
+        if isinstance(boc, bytes):
+            raise UsageError('bytes is readonly so can not receive data')
         if isinstance(boc, bytearray):
             # it's a bytearray
             return boc
-        elif isinstance(boc, memoryview):
-            # it's a memoryview
-            if boc.readonly:
-                raise UsageError('memoryview must be writable to receive data')
-            if boc.itemsize != 1:
-                return boc.cast('B')
-            return boc
-        return None
+        if not isinstance(boc, memoryview):
+            try:
+                boc = memoryview(boc)
+            except TypeError:
+                return None
+        # it's a memoryview
+        if boc.readonly:
+            raise UsageError('memoryview must be writable to receive data')
+        if boc.itemsize != 1:
+            return boc.cast('B')
+        return boc
 
     addr = None
     net_opts = None
@@ -52,6 +61,8 @@ class AbstractHBIC:
     transport = None
     _wire_ctx = None
     _loop = None
+
+    _data_sink = None
 
     def __init__(self, context, addr=None, net_opts=None, *, hbic_listener=None,
                  send_only=False, auto_connect=False, reconn_delay=10,
@@ -77,6 +88,7 @@ class AbstractHBIC:
         self.high_water_mark_send = high_water_mark_send
         self._send_mutex = SendCtrl(loop=loop)
 
+        self._recv_buffer = BufferList()
         self.low_water_mark_recv = low_water_mark_recv
         self.high_water_mark_recv = high_water_mark_recv
         self._recv_obj_waiters = deque()
@@ -145,36 +157,37 @@ class AbstractHBIC:
 
     async def connect(self, addr=None, net_opts=None):
         if self.connected and (addr is None or addr == self.addr) and (net_opts is None or net_opts == self.net_opts):
-            return
+            return self
         if addr is not None:
             self.addr = addr
         if net_opts is not None:
             self.net_opts = None
         if not self.addr:
             raise asyncio.InvalidStateError('attempt connecting without addr')
-        with self._send_mutex, self._corun_mutex:  # lock mutexes to wait all previous sending finished
+        with await (self._send_mutex), await (self._corun_mutex):  # lock mutexes to wait all previous sending finished
             self.disconnect(None, 0)
             fut = self._loop.create_future()
             self._conn_waiters.append(fut)
             self._connect()
             await fut
+            return self
 
     def _connect(self):
         raise NotImplementedError
 
     async def send_code(self, code, wire_dir=None):
         # use mutex to prevent interference
-        with self._send_mutex:
+        with await self._send_mutex:
             await self._send_code(code, wire_dir)
 
     async def send_data(self, bufs):
         # use mutex to prevent interference
-        with self._send_mutex:
+        with await self._send_mutex:
             await self._send_data(bufs)
 
     async def convey(self, code, bufs=None):
         # use mutex to prevent interference
-        with self._send_mutex:
+        with await self._send_mutex:
             await self._send_code(code)
             await self._send_data(bufs)
 
@@ -290,10 +303,30 @@ class AbstractHBIC:
             raise WireError('unknown wire directive [{}]'.format(wire_dir))
 
     def _begin_offload(self, sink):
-        raise NotImplementedError
+        if self._data_sink is not None:
+            raise UsageError('already offloading data')
+        if not callable(sink):
+            raise UsageError('HBI sink to offload data must be a function accepting data chunks')
+        self._data_sink = sink
+        if self._recv_buffer.nbytes > 0:
+            # having buffered data, dump to sink
+            while self._data_sink is sink:
+                chunk = self._recv_buffer.popleft()
+                if not chunk:
+                    break
+                sink(chunk)
+        else:
+            sink(None)
 
     def _end_offload(self, read_ahead=None, sink=None):
-        raise NotImplementedError
+        if sink is not None and sink is not self._data_sink:
+            raise UsageError('resuming from wrong sink')
+        self._data_sink = None
+        if read_ahead:
+            self._recv_buffer.appendleft(read_ahead)
+        # this should have been called from a receiving loop or coroutine, so return here should allow either continue
+        # processing the recv buffer, or the coroutine proceed
+        pass
 
     async def _recv_data(self, bufs):
         fut = self._loop.create_future()
@@ -317,10 +350,14 @@ class AbstractHBIC:
             nonlocal buf
 
             try:
+                chunk = self.cast_to_send_buffer(chunk)  # this static method can be overridden by subclass
                 while True:
                     if buf:
-                        # current buffer not filled yet
                         assert pos < len(buf)
+                        # current buffer not filled yet
+                        if not chunk or len(chunk) <= 0:
+                            # data expected by buf, and none passed in to this call, return and expect next call into here
+                            return
                         available = len(chunk)
                         needs = len(buf) - pos
                         if available < needs:
@@ -403,6 +440,13 @@ class AbstractHBIC:
 
     def _read_wire(self):
         while True:
+            # feed as much buffered data as possible to data sink if present
+            while self._data_sink:
+                chunk = self._recv_buffer.popleft()
+                if not chunk:
+                    # no more buffered data, wire is empty, return
+                    return
+                self._data_sink(chunk)
 
             # in hosting mode, make the incoming data flew as fast as possible
             if not self._corun_mutex.locked():
@@ -465,7 +509,7 @@ mode.
         @functools.wraps(coro)
         async def wrapper():
             # use send+corun mutex to prevent interference with other sendings or coros
-            with self._send_mutex, self._corun_mutex:
+            with await self._send_mutex, await self._corun_mutex:
                 return await coro
 
         return self._loop.create_task(wrapper())
@@ -477,7 +521,7 @@ mode.
             if bufs is not None:
                 await self._send_data(bufs)
         else:
-            with self._send_mutex:
+            with await self._send_mutex:
                 await self._send_code(code, 'corun')
                 if bufs is not None:
                     await self._send_data(bufs)
