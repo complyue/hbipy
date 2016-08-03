@@ -374,6 +374,7 @@ class AbstractHBIC:
                         chunk = chunk[needs:]
                         # clear current buffer pointer
                         buf = None
+                        pos = 0
                         # continue to process rest data in chunk, even chunk is empty now, still need to proceed for
                         # finish condition check
 
