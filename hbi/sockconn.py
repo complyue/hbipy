@@ -2,6 +2,7 @@ import json
 
 from .conn import *
 from .exceptions import *
+from .bytesbuf import *
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +121,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
         self._bdy_buf = None
         self._wire_dir = None
         if err_reason:
-            logger.error({'err': err_reason}, 'disconnecting wire due to error')
+            logger.exception({'err': err_reason}, 'disconnecting wire due to error')
             # TODO send peer error before closing transport
         transport.write_eof()
         transport.close()
@@ -159,7 +160,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
 
         # push to buffer
         if chunk:
-            self._recv_buffer.append(chunk)
+            self._recv_buffer.append(BytesBuffer(chunk))
 
         # read wire regarding corun/hosting mode and flow ctrl
         self._read_wire()
@@ -184,15 +185,13 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
                             self.disconnect(exc)
                             return
                         hdr_got = self._hdr_got + len(chunk)
-                        self._hdr_buf[self._hdr_got:hdr_got] = chunk
+                        self._hdr_buf[self._hdr_got:hdr_got] = chunk.data()
                         self._hdr_got = hdr_got
                         break  # proceed to next chunk in buffer
                     hdr_got = self._hdr_got + pe_pos
-                    self._hdr_buf[self._hdr_got:hdr_got] = chunk[:pe_pos]
+                    self._hdr_buf[self._hdr_got:hdr_got] = chunk.data(0, pe_pos)
                     self._hdr_got = hdr_got
-                    if not isinstance(chunk, memoryview):
-                        chunk = memoryview(chunk)  # use memoryview to avoid copy on slicing
-                    chunk = chunk[pe_pos + 1:]
+                    chunk.consume(pe_pos + 1)
                     header_pl = self._hdr_buf[:self._hdr_got]
                     if not header_pl.startswith(PACK_BEGIN):
                         exc = WireError('Invalid packet start in header: [{}]'.format(header_pl))
@@ -214,16 +213,14 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
                     if len(chunk) < needs:
                         # still not enough for packet body
                         bdy_got = self._bdy_got + len(chunk)
-                        self._bdy_buf[self._bdy_got:bdy_got] = chunk
+                        self._bdy_buf[self._bdy_got:bdy_got] = chunk.data()
                         self._bdy_got = bdy_got
                         break  # proceed to next chunk in buffer
                     # body can be filled now
-                    self._bdy_buf[self._bdy_got:] = chunk[:needs]
+                    self._bdy_buf[self._bdy_got:] = chunk.data(0, needs)
                     if len(chunk) > needs:  # the other case is equal, means exactly consumed
                         # put back extra data to buffer
-                        if not isinstance(chunk, memoryview):
-                            chunk = memoryview(chunk)  # use memoryview to avoid copy on slicing
-                        self._recv_buffer.appendleft(chunk[needs:])
+                        self._recv_buffer.appendleft(chunk.consume(needs))
                     payload = self._bdy_buf.decode('utf-8')
                     self._bdy_buf = None
                     self._bdy_got = 0

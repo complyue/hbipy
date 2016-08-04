@@ -350,7 +350,6 @@ class AbstractHBIC:
             nonlocal buf
 
             try:
-                chunk = self.cast_to_send_buffer(chunk)  # this static method can be overridden by subclass
                 while True:
                     if buf:
                         assert pos < len(buf)
@@ -363,15 +362,15 @@ class AbstractHBIC:
                         if available < needs:
                             # add to current buf
                             new_pos = pos + available
-                            buf[pos:new_pos] = chunk
+                            buf[pos:new_pos] = chunk.data()
                             pos = new_pos
                             # all data in this chunk has been exhausted while current buffer not filled yet
                             # return now and expect succeeding data chunks to come later
                             return
                         # got enough or more data in this chunk to filling current buf
-                        buf[pos:] = chunk[:needs]
+                        buf[pos:] = chunk.data(0, needs)
                         # slice chunk to remaining data
-                        chunk = chunk[needs:]
+                        chunk.consume(needs)
                         # clear current buffer pointer
                         buf = None
                         pos = 0
@@ -440,60 +439,63 @@ class AbstractHBIC:
         return await fut
 
     def _read_wire(self):
-        while True:
-            # feed as much buffered data as possible to data sink if present
-            while self._data_sink:
-                chunk = self._recv_buffer.popleft()
-                if not chunk:
-                    # no more buffered data, wire is empty, return
-                    return
-                self._data_sink(chunk)
-
-            # in hosting mode, make the incoming data flew as fast as possible
-            if not self._corun_mutex.locked():
-                # try consume all buffered data first
-                while True:
-                    # meanwhile in hosting mode, make sure data keep flowing in regarding lwm
-                    if self._recv_water_pos() <= self.low_water_mark_recv:
-                        self._resume_recv()
-                    got = self._land_one()
-                    if not got:
-                        # no more packet to land
-                        break
-                    if self._corun_mutex.locked():
-                        # switched to corun mode during landing, stop draining wire, let the coro recv on-demand,
-                        # and let subsequent incoming data to trigger hwm back pressure
+        try:
+            while True:
+                # feed as much buffered data as possible to data sink if present
+                while self._data_sink:
+                    chunk = self._recv_buffer.popleft()
+                    if not chunk:
+                        # no more buffered data, wire is empty, return
                         return
-                return
+                    self._data_sink(chunk)
 
-            # currently in corun mode
-            # first, try landing as many packets as awaited from buffered data
-            while len(self._recv_obj_waiters) > 0:
-                obj_waiter = self._recv_obj_waiters.popleft()
-                got = self._land_one()
-                if got is None:
-                    # no obj from buffer for now
-                    self._recv_obj_waiters.appendleft(obj_waiter)
-                    break
-                if got[0] is None:
-                    obj_waiter.set_result(got[1])
-                else:
-                    obj_waiter.set_exception(got[0])
+                # in hosting mode, make the incoming data flew as fast as possible
                 if not self._corun_mutex.locked():
-                    # switched to hosting during landing, just settled waiter should be the last one being awaited
-                    assert len(self._recv_obj_waiters) == 0
-                    break
+                    # try consume all buffered data first
+                    while True:
+                        # meanwhile in hosting mode, make sure data keep flowing in regarding lwm
+                        if self._recv_water_pos() <= self.low_water_mark_recv:
+                            self._resume_recv()
+                        got = self._land_one()
+                        if not got:
+                            # no more packet to land
+                            break
+                        if self._corun_mutex.locked():
+                            # switched to corun mode during landing, stop draining wire, let the coro recv on-demand,
+                            # and let subsequent incoming data to trigger hwm back pressure
+                            return
+                    return
 
-            # and if still in corun mode, i.e. not finally switched to hosting mode by previous landings
-            if self._corun_mutex.locked():
-                # ctrl incoming flow regarding hwm/lwm
-                buffered_amount = self._recv_water_pos()
-                if buffered_amount > self.high_water_mark_recv:
-                    self._pause_recv()
-                elif buffered_amount <= self.low_water_mark_recv:
-                    self._resume_recv()
-                # return now and will be called on subsequent recv demand
-                return
+                # currently in corun mode
+                # first, try landing as many packets as awaited from buffered data
+                while len(self._recv_obj_waiters) > 0:
+                    obj_waiter = self._recv_obj_waiters.popleft()
+                    got = self._land_one()
+                    if got is None:
+                        # no obj from buffer for now
+                        self._recv_obj_waiters.appendleft(obj_waiter)
+                        break
+                    if got[0] is None:
+                        obj_waiter.set_result(got[1])
+                    else:
+                        obj_waiter.set_exception(got[0])
+                    if not self._corun_mutex.locked():
+                        # switched to hosting during landing, just settled waiter should be the last one being awaited
+                        assert len(self._recv_obj_waiters) == 0
+                        break
+
+                # and if still in corun mode, i.e. not finally switched to hosting mode by previous landings
+                if self._corun_mutex.locked():
+                    # ctrl incoming flow regarding hwm/lwm
+                    buffered_amount = self._recv_water_pos()
+                    if buffered_amount > self.high_water_mark_recv:
+                        self._pause_recv()
+                    elif buffered_amount <= self.low_water_mark_recv:
+                        self._resume_recv()
+                    # return now and will be called on subsequent recv demand
+                    return
+        except Exception as exc:
+            self.disconnect(exc, 0)
 
     def corun(self, coro):
         """
