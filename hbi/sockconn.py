@@ -14,7 +14,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
             loop = asyncio.get_event_loop()
         server = loop.create_server(
             lambda: cls(context_factory(), loop=loop, **kwargs),
-            host=addr.host, port=addr.port, **(net_opts or {}), **kwargs
+            host=addr.get('host'), port=addr['port'], **(net_opts or {}), **kwargs
         )
         return server
 
