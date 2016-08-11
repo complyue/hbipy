@@ -380,6 +380,7 @@ class AbstractHBIC:
                     # pull next buf to fill
                     try:
                         buf = next(buf_puller)
+                        pos = 0
                     except StopIteration as ret:
                         # all buffers in hierarchy filled, finish receiving
                         self._end_offload(chunk, data_sink)
