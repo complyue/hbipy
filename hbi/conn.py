@@ -243,6 +243,7 @@ class AbstractHBIC:
             b = self.cast_to_send_buffer(boc)  # this static method can be overridden by subclass
             if b is not None:
                 yield b
+                return
             for boc1 in boc:
                 yield from pull_from(boc1)
 
