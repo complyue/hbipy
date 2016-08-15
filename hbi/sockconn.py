@@ -72,10 +72,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
         self._loop.create_task(do_conn())
 
     async def _send_text(self, code, wire_dir=b''):
-        if not code and code is not False:
-            # sending empty packet is a means of alive keeping
-            payload = b''
-        elif isinstance(code, bytes):
+        if isinstance(code, bytes):
             payload = code
         elif isinstance(code, str):
             payload = code.encode('utf-8')
