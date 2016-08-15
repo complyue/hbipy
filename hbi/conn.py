@@ -88,7 +88,7 @@ class AbstractHBIC:
         self.high_water_mark_send = high_water_mark_send
         self._send_mutex = SendCtrl(loop=loop)
 
-        self._recv_buffer = BufferList()
+        self._recv_buffer = None
         self.low_water_mark_recv = low_water_mark_recv
         self.high_water_mark_recv = high_water_mark_recv
         self._recv_obj_waiters = deque()
@@ -132,6 +132,7 @@ class AbstractHBIC:
 
     def wire(self, transport):
         self.transport = transport
+        self._recv_buffer = BufferList()
         if self.hbic_listener:
             self.hbic_listener(self)
         self._send_mutex.startup()
@@ -143,6 +144,17 @@ class AbstractHBIC:
         self._send_mutex.shutdown(exc)
         if exc:
             logger.warn('connection unwired due to error', {'err': exc})
+
+        # abort pending tasks
+        self._recv_buffer = None
+        if self._recv_obj_waiters:
+            if not exc:
+                exc = WireError('disconnected')
+            waiters = self._recv_obj_waiters
+            self._recv_obj_waiters = deque()
+            for waiter in waiters:
+                waiter.set_exception(exc)
+
         # attempt auto re-connection
         if self.auto_connect:
             self._loop.call_later(self.reconn_delay, self._reconn)
@@ -281,7 +293,8 @@ class AbstractHBIC:
             except Exception as exc:
                 return exc,
             finally:
-                self.context['_peer_'] = None
+                # or not available in later async calls
+                # self.context['_peer_'] = None
                 if len(defs) > 0:
                     logger.warn('landed corun code defines sth.', {"defs": defs, "code": code})
         elif 'wire' == wire_dir:
@@ -316,7 +329,7 @@ class AbstractHBIC:
                     break
                 sink(chunk)
         else:
-            sink(None)
+            sink(b'')
 
     def _end_offload(self, read_ahead=None, sink=None):
         if sink is not None and sink is not self._data_sink:
@@ -348,6 +361,10 @@ class AbstractHBIC:
         def data_sink(chunk):
             nonlocal pos
             nonlocal buf
+
+            if chunk is None:
+                fut.set_exception(WireError('disconnected'))
+                self._end_offload(None, data_sink)
 
             try:
                 while True:
@@ -444,6 +461,12 @@ class AbstractHBIC:
             while True:
                 # feed as much buffered data as possible to data sink if present
                 while self._data_sink:
+
+                    if self._recv_buffer is None:
+                        # unexpected disconnect
+                        self._data_sink(None)
+                        return
+
                     chunk = self._recv_buffer.popleft()
                     if not chunk:
                         # no more buffered data, wire is empty, return
@@ -514,7 +537,11 @@ mode.
         async def wrapper():
             # use send+corun mutex to prevent interference with other sendings or coros
             with await self._send_mutex, await self._corun_mutex:
-                return await coro
+                try:
+                    return await coro
+                except Exception as exc:
+                    self._handle_landing_error(exc)
+                    raise
 
         return self._loop.create_task(wrapper())
 

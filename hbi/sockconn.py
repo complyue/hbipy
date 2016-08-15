@@ -78,7 +78,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
             payload = code.encode('utf-8')
         else:
             # try convert to json and send
-            payload = json.dumps(code)
+            payload = json.dumps(code).encode('utf-8')
 
         await self._send_mutex.flowing()
         self.transport.writelines([
@@ -113,7 +113,6 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
             return
         if transport.is_closing():  # already closing
             return
-        self._recv_buffer.clear()
         self._hdr_got = 0
         self._bdy_buf = None
         self._wire_dir = None
@@ -122,6 +121,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
             # TODO send peer error before closing transport
         transport.write_eof()
         transport.close()
+        # assume connection_lost to be called by asyncio loop
 
     def connection_made(self, transport):
         if self.transport:
@@ -164,6 +164,9 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
 
     def _land_one(self):
         while True:
+            if self._recv_buffer is None:
+                raise WireError('wire disconnected')
+
             if self._recv_buffer.nbytes <= 0:
                 return None  # no single full packet can be read from buffer
             chunk = self._recv_buffer.popleft()
