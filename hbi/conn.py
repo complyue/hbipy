@@ -282,22 +282,24 @@ class AbstractHBIC:
                 return exc,
             finally:
                 self.context['_peer_'] = None
-                if len(defs) > 0:
-                    logger.warn('landed code defines sth.', {"defs": defs, "code": code})
         if 'corun' == wire_dir:
             # land the coro and run it
             defs = {}
             self.context['_peer_'] = self
             try:
                 coro = run_in_context(code, self.context, defs)
-                return None, self.corun(coro)
+                ctask = self.corun(coro)
+
+                def clear_peer(fut):  # can only be cleared when coro finished, or it'll lose context
+                    self.context['_peer_'] = None
+
+                ctask.add_done_callback(clear_peer)
+                return None, ctask
             except Exception as exc:
                 return exc,
             finally:
-                # or not available in later async calls
-                # self.context['_peer_'] = None
                 if len(defs) > 0:
-                    logger.warn('landed corun code defines sth.', {"defs": defs, "code": code})
+                    logger.debug({"defs": defs, "code": code}, 'sth defined by landed corun code.')
         elif 'wire' == wire_dir:
             # got wire affair packet, land it
             if self._wire_ctx is None:  # populate this wire's ctx jit
