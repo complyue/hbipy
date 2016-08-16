@@ -14,7 +14,7 @@ def run_in_context(code, context, defs={}):
         if len(field_[1]) > 0 and isinstance(field_[1][-1], ast.Expr):
             last_expr = ast.Expression()
             last_expr.body = field_[1].pop().value
-    exec(compile(ast_, '<code>', 'exec'), context, defs)
+    exec(compile(ast_, '<hbi-code>', 'exec'), context, defs)
     if last_expr:
-        return eval(compile(last_expr, '<code>', 'eval'), context, defs)
+        return eval(compile(last_expr, '<hbi-code>', 'eval'), context, defs)
     return None
