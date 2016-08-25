@@ -22,7 +22,7 @@ DEFAULT_DISCONNECT_WAIT = 30
 
 class AbstractHBIC:
     @staticmethod
-    def cast_to_send_buffer(boc):
+    def cast_to_src_buffer(boc):
         if isinstance(boc, (bytes, bytearray)):
             # it's a bytearray
             return boc
@@ -31,15 +31,18 @@ class AbstractHBIC:
                 boc = memoryview(boc)
             except TypeError:
                 return None
-        # it's a memoryview
-        if boc.itemsize != 1:
+        # it's a memoryview now
+        if boc.nbytes == 0:  # if zero-length, replace with empty bytes
+            # coz when a zero length ndarray is viewed, cast/send will raise while not needed at all
+            return b''
+        elif boc.itemsize != 1:
             return boc.cast('B')
         return boc
 
     @staticmethod
-    def cast_to_recv_buffer(boc):
+    def cast_to_tgt_buffer(boc):
         if isinstance(boc, bytes):
-            raise UsageError('bytes is readonly so can not receive data')
+            raise UsageError('bytes can not be target buffer since readonly')
         if isinstance(boc, bytearray):
             # it's a bytearray
             return boc
@@ -48,10 +51,13 @@ class AbstractHBIC:
                 boc = memoryview(boc)
             except TypeError:
                 return None
-        # it's a memoryview
+        # it's a memoryview now
         if boc.readonly:
-            raise UsageError('memoryview must be writable to receive data')
-        if boc.itemsize != 1:
+            raise UsageError('readonly memoryview can not be target buffer')
+        if boc.nbytes == 0:  # if zero-length, replace with empty bytes
+            # coz when a zero length ndarray is viewed, cast/send will raise while not needed at all
+            return b''
+        elif boc.itemsize != 1:
             return boc.cast('B')
         return boc
 
@@ -240,7 +246,7 @@ class AbstractHBIC:
     async def _send_data(self, bufs):
         # use a generator function to pull all buffers from hierarchy
         def pull_from(boc):
-            b = self.cast_to_send_buffer(boc)  # this static method can be overridden by subclass
+            b = self.cast_to_src_buffer(boc)  # this static method can be overridden by subclass
             if b is not None:
                 yield b
                 return
@@ -349,7 +355,7 @@ class AbstractHBIC:
 
         # use a generator function to pull all buffers from hierarchy
         def pull_from(boc):
-            b = self.cast_to_recv_buffer(boc)  # this static method can be overridden by subclass
+            b = self.cast_to_tgt_buffer(boc)  # this static method can be overridden by subclass
             if b:
                 yield b
             else:
@@ -371,7 +377,7 @@ class AbstractHBIC:
 
             try:
                 while True:
-                    if buf:
+                    if buf is not None:
                         assert pos < len(buf)
                         # current buffer not filled yet
                         if not chunk or len(chunk) <= 0:
@@ -401,6 +407,8 @@ class AbstractHBIC:
                     try:
                         buf = next(buf_puller)
                         pos = 0
+                        if buf.nbytes == 0:  # special case for some empty data
+                            buf = None
                     except StopIteration as ret:
                         # all buffers in hierarchy filled, finish receiving
                         self._end_offload(chunk, data_sink)
