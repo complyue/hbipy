@@ -117,7 +117,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
         self._bdy_buf = None
         self._wire_dir = None
         if err_reason:
-            logger.exception({'err': err_reason}, 'disconnecting wire due to error')
+            logger.exception('disconnecting wire due to error')
             # TODO send peer error before closing transport
         transport.write_eof()
         transport.close()

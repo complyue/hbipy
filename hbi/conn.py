@@ -105,13 +105,15 @@ class AbstractHBIC:
             loop.call_soon(self.connect)
 
     def _handle_landing_error(self, exc):
+        # disconnect anyway
+        self.disconnect(exc)
+
         if self._corun_mutex.locked():
             # coro running, let it handle the err
             logger.warn('landing error', {'err': exc})
         else:
             # in hosting mode, forcefully disconnect
             logger.fatal('disconnecting due to landing error', {'err': exc})
-            self.disconnect(exc)
 
     def _handle_peer_error(self, message, stack):
         logger.warn('disconnecting due to peer error: {}\n{}'.format(message, stack))
