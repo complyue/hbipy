@@ -1,8 +1,9 @@
+import abc
 import asyncio
 import functools
 import inspect
 import logging
-from collections import deque
+from collections import deque, OrderedDict
 
 from .buflist import BufferList
 from .context import run_in_context
@@ -18,6 +19,22 @@ PACK_LEN_END = b'#'
 PACK_END = b']'
 
 DEFAULT_DISCONNECT_WAIT = 30
+
+
+class HBIConnectionListener(metaclass=abc.ABCMeta):
+    def connected(self, hbic):
+        """
+        :param hbic:
+        :return: False to remove this listener, else keep
+        """
+        pass
+
+    def disconnected(self, hbic):
+        """
+        :param hbic:
+        :return: False to remove this listener, else keep
+        """
+        pass
 
 
 class AbstractHBIC:
@@ -83,6 +100,7 @@ class AbstractHBIC:
             self.net_opts = net_opts
         if hbic_listener is not None:
             self.hbic_listener = hbic_listener
+        self._conn_listeners = OrderedDict()
         self.send_only = send_only
         self.auto_connect = auto_connect
         self.reconn_delay = reconn_delay
@@ -138,12 +156,23 @@ class AbstractHBIC:
             return '<unwired>'
         return '[hbic wired to ' + transport + ']'
 
+    def add_connection_listener(self, listener):
+        self._conn_listeners[listener] = None
+
+    def remove_connection_listener(self, listener):
+        del self._conn_listeners[listener]
+
     def wire(self, transport):
         self.transport = transport
         self._recv_buffer = BufferList()
         if self.hbic_listener:
             self.hbic_listener(self)
         self._send_mutex.startup()
+
+        # notify listeners
+        for cl in tuple(self._conn_listeners.keys()):
+            if False is cl.connected(self):
+                del self._conn_listeners[cl]
 
     def unwire(self, transport, exc=None):
         if transport is not self.transport:
@@ -162,6 +191,11 @@ class AbstractHBIC:
             self._recv_obj_waiters = deque()
             for waiter in waiters:
                 waiter.set_exception(exc)
+
+        # notify listeners
+        for cl in tuple(self._conn_listeners):
+            if False is cl.disconnected(self):
+                del self._conn_listeners[cl]
 
         # attempt auto re-connection
         if self.auto_connect:
@@ -184,13 +218,19 @@ class AbstractHBIC:
             self.net_opts = None
         if not self.addr:
             raise asyncio.InvalidStateError('attempt connecting without addr')
-        with await (self._send_mutex), await (self._corun_mutex):  # lock mutexes to wait all previous sending finished
-            self.disconnect(None, 0)
-            fut = self._loop.create_future()
-            self._conn_waiters.append(fut)
-            self._connect()
-            await fut
-            return self
+        try:
+            with await (self._send_mutex), await (
+                    self._corun_mutex):  # lock mutexes to wait all previous sending finished
+                self.disconnect(None, 0)
+                fut = self._loop.create_future()
+                self._conn_waiters.append(fut)
+                self._connect()
+                await fut
+                return self
+        except Exception:
+            # attempt auto re-connection
+            if self.auto_connect:
+                self._loop.call_later(self.reconn_delay, self._reconn)
 
     def _connect(self):
         raise NotImplementedError
