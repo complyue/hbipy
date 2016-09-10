@@ -1,6 +1,7 @@
-from .sockconn import HBIC, DEFAULT_DISCONNECT_WAIT
+from .conn import *
+from .sockconn import *
 
 __all__ = [
     'DEFAULT_DISCONNECT_WAIT',
-    'HBIC',
+    'HBIC', 'corun_with'
 ]

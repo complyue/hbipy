@@ -117,8 +117,8 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
         self._bdy_buf = None
         self._wire_dir = None
         if err_reason:
-            logger.exception('disconnecting wire due to error')
             # TODO send peer error before closing transport
+            logger.fatal({'err': err_reason}, 'disconnecting wire due to error')
         transport.write_eof()
         transport.close()
         # assume connection_lost to be called by asyncio loop
@@ -179,10 +179,12 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
                     if pe_pos < 0:
                         # still not enough for packet header
                         if len(chunk) + self._hdr_got >= PACK_HEADER_MAX:
-                            exc = WireError('No packet header within first {} bytes.'.format(
-                                len(chunk) + self._hdr_got)
-                            )
-                            self.disconnect(exc)
+                            try:
+                                raise WireError('No packet header within first {} bytes.'.format(
+                                    len(chunk) + self._hdr_got)
+                                )
+                            except WireError as exc:
+                                self.disconnect(exc)
                             return
                         hdr_got = self._hdr_got + len(chunk)
                         self._hdr_buf[self._hdr_got:hdr_got] = chunk.data()
@@ -194,13 +196,17 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
                     chunk.consume(pe_pos + 1)
                     header_pl = self._hdr_buf[:self._hdr_got]
                     if not header_pl.startswith(PACK_BEGIN):
-                        exc = WireError('Invalid packet start in header: [{}]'.format(header_pl))
-                        self.disconnect(exc)
+                        try:
+                            raise WireError('Invalid packet start in header: [{}]'.format(header_pl))
+                        except WireError as exc:
+                            self.disconnect(exc)
                         return
                     ple_pos = header_pl.find(PACK_LEN_END, len(PACK_BEGIN))
                     if ple_pos <= 0:
-                        exc = WireError('No packet length in header: [{}]'.format(header_pl))
-                        logger.error(exc)
+                        try:
+                            raise WireError('No packet length in header: [{}]'.format(header_pl))
+                        except WireError as exc:
+                            self.disconnect(exc)
                         return
                     pack_len = int(header_pl[len(PACK_BEGIN):ple_pos])
                     self._wire_dir = header_pl[ple_pos + 1:].decode('utf-8')

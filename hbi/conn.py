@@ -1,9 +1,11 @@
+from typing import *
 import abc
 import asyncio
 import functools
 import inspect
 import logging
 from collections import deque, OrderedDict
+import contextlib
 
 from .buflist import BufferList
 from .context import run_in_context
@@ -128,10 +130,10 @@ class AbstractHBIC:
 
         if self._corun_mutex.locked():
             # coro running, let it handle the err
-            logger.warn('landing error', {'err': exc})
+            logger.warn({'err': exc}, 'landing error')
         else:
             # in hosting mode, forcefully disconnect
-            logger.fatal('disconnecting due to landing error', {'err': exc})
+            logger.fatal({'err': exc}, 'disconnecting due to landing error')
 
     def _handle_peer_error(self, message, stack):
         logger.warn('disconnecting due to peer error: {}\n{}'.format(message, stack))
@@ -186,7 +188,10 @@ class AbstractHBIC:
         self._recv_buffer = None
         if self._recv_obj_waiters:
             if not exc:
-                exc = WireError('disconnected')
+                try:
+                    raise WireError('disconnected')
+                except WireError as the_exc:
+                    exc = the_exc
             waiters = self._recv_obj_waiters
             self._recv_obj_waiters = deque()
             for waiter in waiters:
@@ -219,14 +224,15 @@ class AbstractHBIC:
         if not self.addr:
             raise asyncio.InvalidStateError('attempt connecting without addr')
         try:
-            with await (self._send_mutex), await (
-                    self._corun_mutex):  # lock mutexes to wait all previous sending finished
-                self.disconnect(None, 0)
-                fut = self._loop.create_future()
-                self._conn_waiters.append(fut)
-                self._connect()
-                await fut
-                return self
+            if self.connected:
+                with await (self._send_mutex), await (
+                        self._corun_mutex):  # lock mutexes to wait all previous sending finished
+                    self.disconnect(None, 0)
+            fut = self._loop.create_future()
+            self._conn_waiters.append(fut)
+            self._connect()
+            await fut
+            return self
         except Exception:
             # attempt auto re-connection
             if self.auto_connect:
@@ -609,3 +615,30 @@ mode.
                 await self._send_code(code, 'corun')
                 if bufs is not None:
                     await self._send_data(bufs)
+
+
+def corun_with(coro, hbics: Sequence[AbstractHBIC]):
+    loop = None
+    for hbic in hbics:
+        if loop is None:
+            loop = hbic._loop
+        elif loop is not hbic._loop:
+            raise Exception('corun with hbics on different loops is not possible')
+
+    @functools.wraps(coro)
+    async def wrapper():
+        with contextlib.ExitStack() as stack:
+            # use mutexes of all hbics
+            for hbic in hbics:
+                # use send+corun mutex to prevent interference with other sendings or coros
+                stack.enter_context(await hbic._send_mutex)
+                stack.enter_context(await hbic._corun_mutex)
+
+            try:
+                return await coro
+            except Exception as exc:
+                for hbic in hbics:
+                    hbic._handle_landing_error(exc)
+                raise
+
+    return loop.create_task(wrapper())
