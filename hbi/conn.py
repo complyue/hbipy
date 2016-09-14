@@ -382,6 +382,9 @@ class AbstractHBIC:
             # having buffered data, dump to sink
             while self._data_sink is sink:
                 chunk = self._recv_buffer.popleft()
+                # make sure data keep flowing in regarding lwm
+                if self._recv_water_pos() <= self.low_water_mark_recv:
+                    self._resume_recv()
                 if not chunk:
                     break
                 sink(chunk)
@@ -520,6 +523,9 @@ class AbstractHBIC:
             while True:
                 # feed as much buffered data as possible to data sink if present
                 while self._data_sink:
+                    # make sure data keep flowing in regarding lwm
+                    if self._recv_water_pos() <= self.low_water_mark_recv:
+                        self._resume_recv()
 
                     if self._recv_buffer is None:
                         # unexpected disconnect
