@@ -124,6 +124,12 @@ class AbstractHBIC:
         if auto_connect:
             loop.call_soon(self.connect)
 
+    def __str__(self):
+        return self.net_info
+
+    def __repr__(self):
+        return self.net_info
+
     def _handle_landing_error(self, exc):
         # disconnect anyway
         self.disconnect(exc)
@@ -152,7 +158,7 @@ class AbstractHBIC:
     @property
     def net_info(self):
         if not self.addr:
-            return '<destroyed'
+            return '<destroyed>'
         transport = self.transport
         if not transport:
             return '<unwired>'
