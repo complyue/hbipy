@@ -91,8 +91,8 @@ class AbstractHBIC:
 
     def __init__(self, context, addr=None, net_opts=None, *, hbic_listener=None,
                  send_only=False, auto_connect=False, reconn_delay=10,
-                 low_water_mark_send=2 * 1024 * 1024, high_water_mark_send=12 * 1024 * 1024,
-                 low_water_mark_recv=2 * 1024 * 1024, high_water_mark_recv=12 * 1024 * 1024,
+                 low_water_mark_send=6 * 1024 * 1024, high_water_mark_send=20 * 1024 * 1024,
+                 low_water_mark_recv=6 * 1024 * 1024, high_water_mark_recv=20 * 1024 * 1024,
                  loop=None, **kwargs):
         super().__init__(**kwargs)
         self.context = context

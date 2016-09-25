@@ -97,12 +97,14 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
     def _pause_recv(self):
         if self._recv_paused:
             return
+
         self.transport.pause_reading()
         self._recv_paused = True
 
     def _resume_recv(self):
         if not self._recv_paused:
             return
+
         self.transport.resume_reading()
         self._recv_paused = False
 
