@@ -325,7 +325,7 @@ class AbstractHBIC:
     def _resume_recv(self):
         raise NotImplementedError
 
-    async def _land_one(self):
+    def _land_one(self):
         raise NotImplementedError
 
     def land(self, code, wire_dir):
