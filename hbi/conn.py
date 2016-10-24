@@ -243,6 +243,8 @@ class AbstractHBIC:
             # attempt auto re-connection
             if self.auto_connect:
                 self._loop.call_later(self.reconn_delay, self._reconn)
+            else:
+                raise
 
     def _connect(self):
         raise NotImplementedError
