@@ -358,6 +358,7 @@ class AbstractHBIC:
                 ctask.add_done_callback(clear_peer)
                 return None, ctask
             except Exception as exc:
+                self._handle_wire_error(exc)
                 return exc,
             finally:
                 if len(defs) > 0:
