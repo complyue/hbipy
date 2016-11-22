@@ -136,10 +136,10 @@ class AbstractHBIC:
 
         if self._corun_mutex.locked():
             # coro running, let it handle the err
-            logger.warn({'err': exc}, 'landing error')
+            logger.warn({'err': exc}, 'landing error', exc_info=True)
         else:
             # in hosting mode, forcefully disconnect
-            logger.fatal({'err': exc}, 'disconnecting due to landing error')
+            logger.fatal({'err': exc}, 'disconnecting due to landing error', exc_info=True)
 
     def _handle_peer_error(self, message, stack):
         logger.warn('disconnecting due to peer error: {}\n{}'.format(message, stack))
@@ -356,7 +356,7 @@ class AbstractHBIC:
                     self.context['_peer_'] = None
 
                 ctask.add_done_callback(clear_peer)
-                return None, ctask
+                return None, ctask, coro
             except Exception as exc:
                 self._handle_wire_error(exc)
                 return exc,
@@ -558,8 +558,8 @@ class AbstractHBIC:
                         if not got:
                             # no more packet to land
                             break
-                        if self._corun_mutex.locked():
-                            # switched to corun mode during landing, stop draining wire, let the coro recv on-demand,
+                        if len(got) > 2 and asyncio.iscoroutine(got[2]):
+                            # started a coro during landing, stop draining wire, let the coro recv on-demand,
                             # and let subsequent incoming data to trigger hwm back pressure
                             return
                     return
