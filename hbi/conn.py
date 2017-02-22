@@ -1,11 +1,11 @@
-from typing import *
 import abc
 import asyncio
+import contextlib
 import functools
 import inspect
 import logging
 from collections import deque, OrderedDict
-import contextlib
+from typing import Sequence
 
 from .buflist import BufferList
 from .context import run_in_context
@@ -310,7 +310,15 @@ class AbstractHBIC:
                 yield from pull_from(boc1)
 
         for buf in pull_from(bufs):
-            await self._send_buffer(buf)
+            max_chunk_size = self.high_water_mark_send
+            remain_size = len(buf)
+            send_from_idx = 0
+            while remain_size > max_chunk_size:
+                await self._send_buffer(buf[send_from_idx: send_from_idx + max_chunk_size])
+                send_from_idx += max_chunk_size
+                remain_size -= max_chunk_size
+            if remain_size > 0:
+                await self._send_buffer(buf[send_from_idx:])
 
     async def _send_text(self, code, wire_dir=b''):
         raise NotImplementedError
