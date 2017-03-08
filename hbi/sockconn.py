@@ -1,8 +1,8 @@
 import json
 
+from .bytesbuf import *
 from .conn import *
 from .exceptions import *
-from .bytesbuf import *
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
         self._wire_dir = None
         if err_reason:
             # TODO send peer error before closing transport
-            logger.fatal({'err': err_reason}, 'disconnecting wire due to error')
+            logger.fatal({'err': err_reason}, 'disconnecting wire due to error', exc_info=True)
         transport.write_eof()
         transport.close()
         # assume connection_lost to be called by asyncio loop
