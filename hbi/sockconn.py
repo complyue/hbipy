@@ -199,9 +199,11 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
                     header_pl = self._hdr_buf[:self._hdr_got]
                     if not header_pl.startswith(PACK_BEGIN):
                         try:
-                            raise WireError('Invalid packet start in header: [{}]'.format(header_pl))
+                            rpt_hdr = header_pl[:min(self._hdr_got, 30)]
+                            raise WireError('Invalid packet start in header: [{}]'.format(rpt_hdr))
                         except WireError as exc:
                             self.disconnect(exc)
+                            raise exc
                         return
                     ple_pos = header_pl.find(PACK_LEN_END, len(PACK_BEGIN))
                     if ple_pos <= 0:
