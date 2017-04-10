@@ -115,6 +115,11 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
             return
         if transport.is_closing():  # already closing
             return
+
+        if transport is self.transport:
+            # abort pending tasks if disconnecting currently wired transport
+            self._abort_tasks()
+
         self._hdr_got = 0
         self._bdy_buf = None
         self._wire_dir = None
@@ -212,7 +217,6 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
                             ))
                         except WireError as exc:
                             self.disconnect(exc)
-                            raise exc
                         return
                     ple_pos = header_pl.find(PACK_LEN_END, len(PACK_BEGIN))
                     if ple_pos <= 0:

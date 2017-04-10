@@ -5,6 +5,7 @@ import functools
 import inspect
 import logging
 from collections import deque, OrderedDict
+
 from typing import Sequence
 
 from .buflist import BufferList
@@ -182,14 +183,7 @@ class AbstractHBIC:
             if False is cl.connected(self):
                 del self._conn_listeners[cl]
 
-    def unwire(self, transport, exc=None):
-        if transport is not self.transport:
-            return
-        self.transport = None
-        self._send_mutex.shutdown(exc)
-        if exc:
-            logger.warn('connection unwired due to error', {'err': exc})
-
+    def _abort_tasks(self):
         # abort pending tasks
         self._recv_buffer = None
         if self._recv_obj_waiters:
@@ -207,6 +201,16 @@ class AbstractHBIC:
         for cl in tuple(self._conn_listeners):
             if False is cl.disconnected(self):
                 del self._conn_listeners[cl]
+
+    def unwire(self, transport, exc=None):
+        if transport is not self.transport:
+            return
+        self.transport = None
+        self._send_mutex.shutdown(exc)
+        if exc:
+            logger.warn('connection unwired due to error', {'err': exc})
+
+        self._abort_tasks()
 
         # attempt auto re-connection
         if self.auto_connect:
