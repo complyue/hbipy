@@ -183,7 +183,7 @@ class AbstractHBIC:
             if False is cl.connected(self):
                 del self._conn_listeners[cl]
 
-    def _abort_tasks(self):
+    def _abort_tasks(self, exc=None):
         # abort pending tasks
         self._recv_buffer = None
         if self._recv_obj_waiters:
@@ -208,9 +208,9 @@ class AbstractHBIC:
         self.transport = None
         self._send_mutex.shutdown(exc)
         if exc:
-            logger.warn('connection unwired due to error', {'err': exc})
+            logger.warning('connection unwired due to error', {'err': exc})
 
-        self._abort_tasks()
+        self._abort_tasks(exc)
 
         # attempt auto re-connection
         if self.auto_connect:
