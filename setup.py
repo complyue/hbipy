@@ -18,8 +18,8 @@ with open(os.path.join(root, 'hbi', 'version.py'), encoding='utf-8') as f:
 
 py_version = sys.version_info[:2]
 
-if py_version < (3, 5):
-    raise Exception("hbi requires Python >= 3.5.")
+if py_version < (3, 6):
+    raise Exception("hbi requires Python >= 3.6.")
 
 packages = ['hbi']
 
@@ -43,7 +43,7 @@ setuptools.setup(
         "Operating System :: OS Independent",
         "Programming Language :: Python",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.5",
+        "Programming Language :: Python :: 3.6",
     ],
     platforms='all',
     license='BSD'

@@ -5,10 +5,8 @@ import functools
 import inspect
 import logging
 from collections import deque, OrderedDict
-
 from typing import Sequence
 
-from .buflist import BufferList
 from .context import run_in_context
 from .exceptions import *
 from .sendctrl import SendCtrl
@@ -20,8 +18,6 @@ PACK_HEADER_MAX = 60
 PACK_BEGIN = b'['
 PACK_LEN_END = b'#'
 PACK_END = b']'
-
-DEFAULT_DISCONNECT_WAIT = 30
 
 
 class HBIConnectionListener(metaclass=abc.ABCMeta):
@@ -90,6 +86,9 @@ class AbstractHBIC:
 
     _data_sink = None
 
+    _conn_fut = None
+    _disconn_fut = None
+
     def __init__(self, context, addr=None, net_opts=None, *, hbic_listener=None,
                  send_only=False, auto_connect=False, reconn_delay=10,
                  low_water_mark_send=6 * 1024 * 1024, high_water_mark_send=20 * 1024 * 1024,
@@ -121,7 +120,6 @@ class AbstractHBIC:
         self._recv_obj_waiters = deque()
         self._corun_mutex = asyncio.Lock(loop=loop)
 
-        self._conn_waiters = deque()
         if auto_connect:
             loop.call_soon(self.connect)
 
@@ -132,22 +130,18 @@ class AbstractHBIC:
         return self.net_info
 
     def _handle_landing_error(self, exc):
-        # disconnect anyway
-        self.disconnect(exc)
-
-        if self._corun_mutex.locked():
-            # coro running, let it handle the err
-            logger.warn({'err': exc}, 'landing error', exc_info=True)
-        else:
-            # in hosting mode, forcefully disconnect
-            logger.fatal({'err': exc}, 'disconnecting due to landing error', exc_info=True)
+        self.disconnect(f'landing error: {exc}')
 
     def _handle_peer_error(self, message, stack):
-        logger.warn('disconnecting due to peer error: {}\n{}'.format(message, stack))
-        self.disconnect()
+        logger.fatal(f'peer error occurred: {message}\n{stack}')
+        self.disconnect('peer error: {message}')
 
-    def _handle_wire_error(self, exc, transport=None):
-        self.disconnect(exc, 0, transport)
+    def _handle_wire_error(self, exc):
+        import traceback
+        err_stack = traceback.format_exc()
+        if not isinstance(exc, WireError):
+            exc = WireError(str(exc))
+        self._loop.create_task(self._disconnect(exc, err_stack))
 
     @property
     def connected(self):
@@ -171,27 +165,12 @@ class AbstractHBIC:
     def remove_connection_listener(self, listener):
         del self._conn_listeners[listener]
 
-    def wire(self, transport):
-        self.transport = transport
-        self._recv_buffer = BufferList()
-        if self.hbic_listener:
-            self.hbic_listener(self)
-        self._send_mutex.startup()
-
-        # notify listeners
-        for cl in tuple(self._conn_listeners.keys()):
-            if False is cl.connected(self):
-                del self._conn_listeners[cl]
-
     def _abort_tasks(self, exc=None):
         # abort pending tasks
         self._recv_buffer = None
         if self._recv_obj_waiters:
             if not exc:
-                try:
-                    raise WireError('disconnected')
-                except WireError as the_exc:
-                    exc = the_exc
+                exc = WireError('disconnected')
             waiters = self._recv_obj_waiters
             self._recv_obj_waiters = deque()
             for waiter in waiters:
@@ -202,56 +181,75 @@ class AbstractHBIC:
             if False is cl.disconnected(self):
                 del self._conn_listeners[cl]
 
-    def unwire(self, transport, exc=None):
-        if transport is not self.transport:
-            return
-        self.transport = None
-        self._send_mutex.shutdown(exc)
-        if exc:
-            logger.warning('connection unwired due to error', {'err': exc})
+    def run_until_disconnected(self):
+        if self.connected:
+            fut = self._disconn_fut
+            if fut is None:
+                fut = self._loop.create_future()
+                self._disconn_fut = fut
+            self._loop.run_until_complete(fut)
 
-        self._abort_tasks(exc)
+    def _disconnect(self, err_reason=None, err_stack=None):
+        raise NotImplementedError('subclass should implement this as a coroutine')
 
-        # attempt auto re-connection
-        if self.auto_connect:
-            self._loop.call_later(self.reconn_delay, self._reconn)
+    def disconnect(self, err_reason=None):
+        import traceback
+        err_stack = traceback.format_exc()
+        # this can be called from any thread
+        self._loop.call_soon_threadsafe(self._loop.create_task, self._disconnect(err_reason, err_stack))
 
-    def disconnect(self, err_reason=None, destroy_delay=DEFAULT_DISCONNECT_WAIT, transport=None):
-        raise NotImplementedError
+    def _wire_up(self):
+        raise NotImplementedError('subclass should implement this as a coroutine')
 
-    def _reconn(self):
-        if not self.addr:
-            return
-        self._loop.create_task(self.connect())
+    async def _connect(self):
+        assert not self.connected, 'attempt new connection while connected ?!'
 
-    async def connect(self, addr=None, net_opts=None):
-        if self.connected and (addr is None or addr == self.addr) and (net_opts is None or net_opts == self.net_opts):
-            return self
+        try:
+
+            await self._wire_up()
+
+        except Exception as exc:
+
+            if self.auto_connect:
+                # attempt auto re-connection
+                logger.warning('connecting failed, retrying later', exc_info=True)
+                self._loop.call_later(self.reconn_delay, self.connect)
+                return
+
+            fut = self._conn_fut
+            if fut is not None:
+                self._conn_fut = None
+                fut.set_exception(exc)
+
+        else:
+
+            fut = self._conn_fut
+            if fut is not None:
+                self._conn_fut = None
+                fut.set_result(None)
+
+    def connect(self, addr=None, net_opts=None):
+        if self.connected:
+            if (addr is None or addr == self.addr) and (net_opts is None or net_opts == self.net_opts):
+                return
+            raise asyncio.InvalidStateError(
+                'already connected to different addr, disconnect before connect to else where'
+            )
         if addr is not None:
             self.addr = addr
         if net_opts is not None:
             self.net_opts = None
         if not self.addr:
             raise asyncio.InvalidStateError('attempt connecting without addr')
-        try:
-            if self.connected:
-                with await (self._send_mutex), await (
-                        self._corun_mutex):  # lock mutexes to wait all previous sending finished
-                    self.disconnect(None, 0)
-            fut = self._loop.create_future()
-            self._conn_waiters.append(fut)
-            self._connect()
-            await fut
-            return self
-        except Exception:
-            # attempt auto re-connection
-            if self.auto_connect:
-                self._loop.call_later(self.reconn_delay, self._reconn)
-            else:
-                raise
 
-    def _connect(self):
-        raise NotImplementedError
+        self._loop.run_until_complete(self._connect())
+
+    def fire(self, code, bufs=None):
+        """
+        Fire and forget.
+
+        """
+        self._loop.call_soon_threadsafe(self._loop.create_task, self.convey(code, bufs))
 
     async def send_code(self, code, wire_dir=None):
         # use mutex to prevent interference
@@ -267,7 +265,8 @@ class AbstractHBIC:
         # use mutex to prevent interference
         with await self._send_mutex:
             await self._send_code(code)
-            await self._send_data(bufs)
+            if bufs is not None:
+                await self._send_data(bufs)
 
     async def co_send_code(self, code, wire_dir=None):
         if not self._corun_mutex.locked():
@@ -304,7 +303,10 @@ class AbstractHBIC:
             await self._send_text(code, wire_dir)
 
     async def _send_data(self, bufs):
+        assert bufs is not None
+
         # use a generator function to pull all buffers from hierarchy
+
         def pull_from(boc):
             b = self.cast_to_src_buffer(boc)  # this static method can be overridden by subclass
             if b is not None:
@@ -378,9 +380,7 @@ class AbstractHBIC:
         elif 'wire' == wire_dir:
             # got wire affair packet, land it
             if self._wire_ctx is None:  # populate this wire's ctx jit
-                self._wire_ctx = {}
-                for attr in dir(self):
-                    self._wire_ctx[attr] = getattr(self, attr)
+                self._wire_ctx = {attr: getattr(self, attr) for attr in dir(self)}
                 self._wire_ctx['handlePeerErr'] = self._handle_peer_error  # function name from hbi js
             defs = {}
             try:
@@ -389,7 +389,7 @@ class AbstractHBIC:
                 self._handle_wire_error(exc)
             finally:
                 if len(defs) > 0:
-                    logger.warn('landed wire code defines sth.', {"defs": defs, "code": code})
+                    logger.warning('landed wire code defines sth.', {"defs": defs, "code": code})
         else:
             raise WireError('unknown wire directive [{}]'.format(wire_dir))
 
@@ -453,7 +453,8 @@ class AbstractHBIC:
                         assert pos < len(buf)
                         # current buffer not filled yet
                         if not chunk or len(chunk) <= 0:
-                            # data expected by buf, and none passed in to this call, return and expect next call into here
+                            # data expected by buf, and none passed in to this call,
+                            # return and expect next call into here
                             return
                         available = len(chunk)
                         needs = len(buf) - pos
@@ -605,7 +606,7 @@ class AbstractHBIC:
                     # return now and will be called on subsequent recv demand
                     return
         except Exception as exc:
-            self.disconnect(exc, 0)
+            self._handle_wire_error(exc)
 
     def corun(self, coro):
         """
@@ -634,12 +635,12 @@ mode.
     async def send_corun(self, code, bufs=None):
         if self._corun_mutex.locked():
             # sending mutex is effectively locked in corun mode
-            await self._send_code(code, 'corun')
+            await self._send_code(code, b'corun')
             if bufs is not None:
                 await self._send_data(bufs)
         else:
             with await self._send_mutex:
-                await self._send_code(code, 'corun')
+                await self._send_code(code, b'corun')
                 if bufs is not None:
                     await self._send_data(bufs)
 

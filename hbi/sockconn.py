@@ -1,5 +1,6 @@
 import json
 
+from .buflist import *
 from .bytesbuf import *
 from .conn import *
 from .exceptions import *
@@ -8,13 +9,18 @@ logger = logging.getLogger(__name__)
 
 
 class HBIC(AbstractHBIC, asyncio.Protocol):
+    """
+    Socket based HBI Connection
+
+    """
+
     @classmethod
     def create_server(cls, context_factory, addr, net_opts=None, *, loop=None, **kwargs):
         if loop is None:
             loop = asyncio.get_event_loop()
         server = loop.create_server(
             lambda: cls(context_factory(), loop=loop, **kwargs),
-            host=addr.get('host'), port=addr['port'], **(net_opts or {}), **kwargs
+            host=addr.get('host', None), port=addr['port'], **(net_opts or {}), **kwargs
         )
         return server
 
@@ -36,8 +42,6 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
 
     @property
     def net_info(self):
-        if not self.addr:
-            return '<destroyed>'
         transport = self.transport
         if not transport:
             return '<unwired>'
@@ -45,31 +49,18 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
             return '<closing>'
         return '[{!r}] <=> [{!r}]'.format(transport.get_extra_info('sockname'), transport.get_extra_info('peername'))
 
-    def _connect(self):
+    async def _wire_up(self):
         assert self.addr, 'should not reach here'
         if self.transport:
             if not self.transport.is_closing():
                 raise asyncio.InvalidStateError('requesting new connection with transport already wired')
             self.transport = None  # clear the attr earlier
 
-        async def do_conn():
-            try:
-                (transport, protocol) = await self._loop.create_connection(
-                    lambda: self, self.addr['host'], self.addr['port'], **self.net_opts or {})
-            except Exception as exc:
-                waiters = self._conn_waiters
-                self._conn_waiters = deque()
-                for waiter in waiters:
-                    if not waiter.done():
-                        waiter.set_exception(exc)
-            else:
-                waiters = self._conn_waiters
-                self._conn_waiters = deque()
-                for waiter in waiters:
-                    if not waiter.done():
-                        waiter.set_result(self)
-
-        self._loop.create_task(do_conn())
+        transport, protocol = await self._loop.create_connection(
+            lambda: self,
+            self.addr['host'], self.addr['port'],
+            **self.net_opts or {}
+        )
 
     async def _send_text(self, code, wire_dir=b''):
         if isinstance(code, bytes):
@@ -108,32 +99,38 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
         self.transport.resume_reading()
         self._recv_paused = False
 
-    def disconnect(self, err_reason=None, destroy_delay=DEFAULT_DISCONNECT_WAIT, transport=None):
-        if transport is None:
-            transport = self.transport
-        if not transport:
-            return
-        if transport.is_closing():  # already closing
+    async def _disconnect(self, err_reason=None, err_stack=None):
+        transport = self.transport
+        if not transport or transport.is_closing():  # already closing
             return
 
-        if transport is self.transport:
-            # abort pending tasks if disconnecting currently wired transport
-            self._abort_tasks()
-
+        # clear incoming buffers to prevent further landings
         self._hdr_got = 0
         self._bdy_buf = None
         self._wire_dir = None
+
         if err_reason is not None:
-            # TODO send peer error before closing transport
-            logger.fatal({'err': err_reason}, 'disconnecting wire due to error', exc_info=True)
+
+            logger.fatal(f'disconnecting {self.net_info} due to {err_reason}')
+
+            # try send peer error
+            if not isinstance(err_reason, WireError):
+                try:
+                    await self._send_text('''
+handlePeerErr(%r,%r)
+''' % (err_reason, err_stack), b'wire')
+                except Exception:
+                    logger.warning('error sending peer error', exc_info=True)
+
+        # close outgoing channel
         transport.write_eof()
         transport.close()
-        # assume connection_lost to be called by asyncio loop
+        # connection_lost will be called by asyncio loop after out-going packets flushed
 
     def connection_made(self, transport):
         if self.transport:
             if self.transport.is_closing():
-                logger.warn('reconnect so fast, old transport not fully closed yet')
+                logger.warning('reconnect so fast, old transport not fully closed yet')
             else:
                 raise asyncio.InvalidStateError('replacing connected transport with new one')
         transport.set_write_buffer_limits(self.high_water_mark_send, self.low_water_mark_send)
@@ -141,7 +138,17 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
         self._hdr_got = 0
         self._bdy_got = None
         self._wire_dir = None
-        self.wire(transport)
+
+        self.transport = transport
+        self._recv_buffer = BufferList()
+        if self.hbic_listener:
+            self.hbic_listener(self)
+        self._send_mutex.startup()
+
+        # notify listeners
+        for cl in tuple(self._conn_listeners.keys()):
+            if False is cl.connected(self):
+                del self._conn_listeners[cl]
 
     def pause_writing(self):
         """this is to implement asyncio.Protocol, never call it directly"""
@@ -153,7 +160,22 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
 
     def connection_lost(self, exc):
         """this is to implement asyncio.Protocol, never call it directly"""
-        self.unwire(self.transport, exc)
+        self.transport = None
+        self._send_mutex.shutdown(exc)
+        if exc:
+            logger.warning('connection unwired due to error', exc_info=True)
+
+        self._abort_tasks(exc)
+
+        # attempt auto re-connection
+        if self.auto_connect:
+            self._loop.call_later(self.reconn_delay, self.connect)
+            return
+
+        fut = self._disconn_fut
+        if fut is not None:
+            self._disconn_fut = None
+            fut.set_result(None)
 
     def eof_received(self):
         """this is to implement asyncio.Protocol, never call it directly"""
