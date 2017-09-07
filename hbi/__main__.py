@@ -4,7 +4,7 @@ import sys
 
 import hbi
 
-assert '__main__' == __name__
+assert __name__.endswith('__main__')
 
 
 def print_usage():
@@ -59,8 +59,14 @@ def main():
 
     if run_server:
 
+        hbis = None
+
         def ctx_factory():
-            return runpy.run_module(modu_name)
+            nonlocal hbis
+
+            ctx = runpy.run_module(modu_name)
+            ctx['_server_'] = hbis
+            return ctx
 
         print(f'Starting HBI server with module {modu_name} on {host or "*"}:{port}', file=sys.stderr)
         hbis = loop.run_until_complete(hbi.HBIC.create_server(ctx_factory, addr={
@@ -77,26 +83,30 @@ def main():
             return print_usage()
 
         print(f'Connecting to HBI server {host}:{port} with module {modu_name}', file=sys.stderr)
-        ctx = runpy.run_module(modu_name)
-        hbic = hbi.HBIC(ctx, addr={
-            'host': host, 'port': port,
-        }, loop=loop)
-        hbic.connect()
-
-        hbi_boot = ctx.get('hbi_boot', None)
-        if hbi_boot is not None:
-
-            # calling client side boot function
-            hbi_boot(hbic)
-
-        else:
-
-            # sending boot request to server
-            hbic.fire('hbi_boot()')
-
         try:
+            ctx = runpy.run_module(modu_name)
+            hbic = hbi.HBIC(ctx, addr={
+                'host': host, 'port': port,
+            }, loop=loop)
+            hbic.connect()
+
+            hbi_boot = ctx.get('hbi_boot', None)
+            if hbi_boot is not None:
+
+                # calling client side boot function
+                hbi_boot(hbic)
+
+            else:
+
+                # sending boot request to server
+                hbic.fire('hbi_boot()')
+
             hbic.run_until_disconnected()
         except KeyboardInterrupt:
+            pass
+        except:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             return
 
 

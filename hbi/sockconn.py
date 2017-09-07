@@ -56,7 +56,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
                 raise asyncio.InvalidStateError('requesting new connection with transport already wired')
             self.transport = None  # clear the attr earlier
 
-        transport, protocol = await self._loop.create_connection(
+        await self._loop.create_connection(
             lambda: self,
             self.addr['host'], self.addr['port'],
             **self.net_opts or {}
@@ -111,7 +111,7 @@ class HBIC(AbstractHBIC, asyncio.Protocol):
 
         if err_reason is not None:
 
-            logger.fatal(f'disconnecting {self.net_info} due to {err_reason}')
+            logger.fatal(f'disconnecting {self.net_info} due to error: {err_reason}\n{err_stack or ""}')
 
             # try send peer error
             if not isinstance(err_reason, WireError):

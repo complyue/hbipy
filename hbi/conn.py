@@ -95,6 +95,7 @@ class AbstractHBIC:
                  low_water_mark_recv=6 * 1024 * 1024, high_water_mark_recv=20 * 1024 * 1024,
                  loop=None, **kwargs):
         super().__init__(**kwargs)
+        context['_peer_'] = self
         self.context = context
         if addr is not None:
             self.addr = addr
@@ -142,6 +143,10 @@ class AbstractHBIC:
         if not isinstance(exc, WireError):
             exc = WireError(str(exc))
         self._loop.create_task(self._disconnect(exc, err_stack))
+
+    @property
+    def loop(self):
+        return self._loop
 
     @property
     def connected(self):
@@ -209,17 +214,22 @@ class AbstractHBIC:
             await self._wire_up()
 
         except Exception as exc:
+            fut = self._conn_fut
 
             if self.auto_connect:
                 # attempt auto re-connection
                 logger.warning('connecting failed, retrying later', exc_info=True)
                 self._loop.call_later(self.reconn_delay, self.connect)
-                return
+                if fut is None:
+                    fut = self._loop.create_future()
+                    self._conn_fut = fut
+                return fut
 
-            fut = self._conn_fut
             if fut is not None:
                 self._conn_fut = None
                 fut.set_exception(exc)
+
+            raise
 
         else:
 
@@ -345,10 +355,25 @@ class AbstractHBIC:
         raise NotImplementedError
 
     def land(self, code, wire_dir):
+
+        # allow customization of code landing
+        lander = self.context.get('__hbi_land__', None)
+        if lander is not None:
+            assert callable(lander), 'non-callable __hbi_land__ defined ?!'
+            try:
+                if NotImplemented is not lander(code, wire_dir):
+                    # custom lander can return `NotImplemented` to proceed standard landing
+                    return
+            except Exception as exc:
+                # treat uncaught error in custom landing as wire error
+                self._handle_wire_error(exc)
+                return
+
+        # standard landing
+
         if wire_dir is None or len(wire_dir) <= 0:
             # got plain packet, land it
             defs = {}
-            self.context['_peer_'] = self
             try:
                 return None, run_in_context(code, self.context, defs)
             except Exception as exc:
@@ -357,26 +382,21 @@ class AbstractHBIC:
                 # return the err so the running coro also has a chance to handle it
                 return exc,
             finally:
-                self.context['_peer_'] = None
+                if len(defs) > 0:
+                    logger.debug('sth defined by landed code.', {"defs": defs, "code": code})
         if 'corun' == wire_dir:
             # land the coro and run it
             defs = {}
-            self.context['_peer_'] = self
             try:
                 coro = run_in_context(code, self.context, defs)
                 ctask = self.corun(coro)
-
-                def clear_peer(fut):  # can only be cleared when coro finished, or it'll lose context
-                    self.context['_peer_'] = None
-
-                ctask.add_done_callback(clear_peer)
                 return None, ctask, coro
             except Exception as exc:
                 self._handle_wire_error(exc)
                 return exc,
             finally:
                 if len(defs) > 0:
-                    logger.debug({"defs": defs, "code": code}, 'sth defined by landed corun code.')
+                    logger.debug('sth defined by landed corun code.', {"defs": defs, "code": code})
         elif 'wire' == wire_dir:
             # got wire affair packet, land it
             if self._wire_ctx is None:  # populate this wire's ctx jit
