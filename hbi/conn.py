@@ -261,6 +261,13 @@ class AbstractHBIC:
         """
         self._loop.call_soon_threadsafe(self._loop.create_task, self.convey(code, bufs))
 
+    def fire_corun(self, code, bufs=None):
+        """
+        Fire and forget.
+
+        """
+        self._loop.call_soon_threadsafe(self._loop.create_task, self.send_corun(code, bufs))
+
     async def send_code(self, code, wire_dir=None):
         # use mutex to prevent interference
         with await self._send_mutex:
@@ -629,16 +636,6 @@ class AbstractHBIC:
             self._handle_wire_error(exc)
 
     def corun(self, coro):
-        """
-Run a coroutine, while having this HBIC track its execution.
-
-As the coroutine is launched, this HBIC switches itself into `corun` mode. In contrast to normal `hosting` mode,
-packets will not get landed immediately at arrival, both for code and binary data. The transport will build back
-pressure as pending amount raises beyond `high_water_mark_recv`. The coroutine is expected to read packet landing
-results and binary data by awaiting calls to `co_recv_obj` and `co_recv_data`. When the coroutine terminates either by
-returning or letting through unhandled exception, this HBIC will launch next coroutine if in queue, or resume hosting
-mode.
-"""
 
         @functools.wraps(coro)
         async def wrapper():
