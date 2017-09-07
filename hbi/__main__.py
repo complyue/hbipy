@@ -73,6 +73,9 @@ def main():
             'host': host, 'port': port,
         }, loop=loop))
         try:
+            runpy.run_module(modu_name, {
+                '_server_': hbis, '_host_': host, '_port_': port,
+            }, run_name='__hbi_serving__')
             loop.run_until_complete(hbis.wait_closed())
         except KeyboardInterrupt:
             return
@@ -94,7 +97,7 @@ def main():
             if hbi_boot is not None:
 
                 # calling client side boot function
-                hbi_boot(hbic)
+                hbi_boot()
 
             else:
 
