@@ -236,12 +236,14 @@ class AbstractHBIC:
             fut = self._conn_fut
             if fut is not None:
                 self._conn_fut = None
-                fut.set_result(None)
+                fut.set_result(self)
 
-    def connect(self, addr=None, net_opts=None):
+        return self
+
+    async def connect(self, addr=None, net_opts=None):
         if self.connected:
             if (addr is None or addr == self.addr) and (net_opts is None or net_opts == self.net_opts):
-                return
+                return self
             raise asyncio.InvalidStateError(
                 'already connected to different addr, disconnect before connect to else where'
             )
@@ -252,7 +254,10 @@ class AbstractHBIC:
         if not self.addr:
             raise asyncio.InvalidStateError('attempt connecting without addr')
 
-        self._loop.run_until_complete(self._connect())
+        return await self._connect()
+
+    def run_until_connected(self):
+        return self._loop.run_until_complete(self.connect())
 
     def fire(self, code, bufs=None):
         """

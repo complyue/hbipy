@@ -91,7 +91,7 @@ def main():
             hbic = hbi.HBIC(ctx, addr={
                 'host': host, 'port': port,
             }, loop=loop)
-            hbic.connect()
+            hbic.run_until_connected()
 
             hbi_boot = ctx.get('hbi_boot', None)
             if hbi_boot is not None:
