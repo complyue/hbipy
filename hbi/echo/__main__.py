@@ -36,13 +36,13 @@ print('This is echo server, merely serving `echo(*args, **kwargs)`, other code w
 
 
     def hbi_peer_done():
-        print(f'Client {hbi_peer} quited.')
+        print(f'Client {hbi_peer} quited.', flush=True, file=sys.stderr)
 
 
     def hbi_disconnecting(err_reason=None):
-        print(f'Client {hbi_peer} disconnecting.')
+        print(f'Client {hbi_peer} disconnecting.', flush=True, file=sys.stderr)
         if err_reason is not None:
-            print(f'  - Due to reason: {err_reason}')
+            print(f'  - Due to reason: {err_reason}', flush=True, file=sys.stderr)
 
 
     def echo(*args, **kwargs):
@@ -80,7 +80,7 @@ elif '__hbi_connecting__' == __name__:
             def runsource(self, source, filename="<input>", symbol="single"):
 
                 if not hbi_peer.connected:
-                    print('HBI disconnected, exiting...', file=sys.stderr)
+                    print('HBI disconnected, exiting...', flush=True, file=sys.stderr)
                     raise SystemExit
 
                 if len(source) <= 0:

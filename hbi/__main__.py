@@ -64,6 +64,10 @@ def main():
 
     if run_server:
 
+        if host is None:
+            import platform
+            host = platform.node()
+
         hbis = None
 
         def ctx_factory():
