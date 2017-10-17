@@ -13,6 +13,7 @@ description = "Hosting Based Interfacing"
 with open(os.path.join(root, 'README'), encoding='utf-8') as f:
     long_description = '\n\n'.join(f.read().split('\n\n')[1:])
 
+version = '??'
 with open(os.path.join(root, 'hbi', 'version.py'), encoding='utf-8') as f:
     exec(f.read())
 
@@ -34,7 +35,6 @@ setuptools.setup(
     download_url='https://pypi.python.org/pypi/hbi',
     packages=packages,
     extras_require={
-        'ws': ['websockets']
     },
     classifiers=[
         "Development Status :: 4 - Beta",

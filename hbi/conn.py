@@ -1,42 +1,28 @@
-import abc
 import asyncio
 import contextlib
 import functools
 import inspect
 import logging
-from collections import deque, OrderedDict
+from collections import deque
 from typing import Sequence
 
 from .context import run_in_context
-from .exceptions import *
 from .sendctrl import SendCtrl
+
+__all__ = [
+    'corun_with',
+    'AbstractHBIC',
+]
 
 logger = logging.getLogger(__name__)
 
-# max scanned length of packet header
-PACK_HEADER_MAX = 60
-PACK_BEGIN = b'['
-PACK_LEN_END = b'#'
-PACK_END = b']'
-
-
-class HBIConnectionListener(metaclass=abc.ABCMeta):
-    def connected(self, hbic):
-        """
-        :param hbic:
-        :return: False to remove this listener, else keep
-        """
-        pass
-
-    def disconnected(self, hbic):
-        """
-        :param hbic:
-        :return: False to remove this listener, else keep
-        """
-        pass
-
 
 class AbstractHBIC:
+    """
+    Abstract HBI Connection
+
+    """
+
     @staticmethod
     def cast_to_src_buffer(boc):
         if isinstance(boc, (bytes, bytearray)):
@@ -58,7 +44,7 @@ class AbstractHBIC:
     @staticmethod
     def cast_to_tgt_buffer(boc):
         if isinstance(boc, bytes):
-            raise UsageError('bytes can not be target buffer since readonly')
+            raise TypeError('bytes can not be target buffer since readonly')
         if isinstance(boc, bytearray):
             # it's a bytearray
             return boc
@@ -69,7 +55,7 @@ class AbstractHBIC:
                 return None
         # it's a memoryview now
         if boc.readonly:
-            raise UsageError('readonly memoryview can not be target buffer')
+            raise TypeError('readonly memoryview can not be target buffer')
         if boc.nbytes == 0:  # if zero-length, replace with empty bytes
             # coz when a zero length ndarray is viewed, cast/send will raise while not needed at all
             return b''
@@ -77,39 +63,48 @@ class AbstractHBIC:
             return boc.cast('B')
         return boc
 
-    addr = None
-    net_opts = None
-    hbic_listener = None
-    transport = None
-    _wire_ctx = None
-    _loop = None
+    __slots__ = (
+        'context',
+        'addr', 'net_opts',
+        'send_only',
 
-    _data_sink = None
+        '_loop',
+        '_wire', '_wire_ctx', '_data_sink', '_conn_fut', '_disc_fut',
 
-    _conn_fut = None
-    _disconn_fut = None
+        'low_water_mark_send', 'high_water_mark_send', '_send_mutex',
 
-    def __init__(self, context, addr=None, net_opts=None, *, hbic_listener=None,
-                 send_only=False, auto_connect=False, reconn_delay=10,
-                 low_water_mark_send=6 * 1024 * 1024, high_water_mark_send=20 * 1024 * 1024,
-                 low_water_mark_recv=6 * 1024 * 1024, high_water_mark_recv=20 * 1024 * 1024,
-                 loop=None, **kwargs):
+        '_recv_buffer',
+        'low_water_mark_recv', 'high_water_mark_recv',
+        '_recv_obj_waiters',
+
+        '_corun_mutex',
+    )
+
+    def __init__(
+            self,
+            context, addr=None, net_opts=None,
+            *,
+            send_only=False,
+            low_water_mark_send=6 * 1024 * 1024, high_water_mark_send=20 * 1024 * 1024,
+            low_water_mark_recv=6 * 1024 * 1024, high_water_mark_recv=20 * 1024 * 1024,
+            loop=None,
+            **kwargs
+    ):
         super().__init__(**kwargs)
         context['_peer_'] = self
         self.context = context
-        if addr is not None:
-            self.addr = addr
-        if net_opts is not None:
-            self.net_opts = net_opts
-        if hbic_listener is not None:
-            self.hbic_listener = hbic_listener
-        self._conn_listeners = OrderedDict()
+        self.addr = addr
+        self.net_opts = net_opts
         self.send_only = send_only
-        self.auto_connect = auto_connect
-        self.reconn_delay = reconn_delay
         if loop is None:
             loop = asyncio.get_event_loop()
         self._loop = loop
+
+        self._wire = None
+        self._wire_ctx = None
+        self._data_sink = None
+        self._conn_fut = None
+        self._disc_fut = None
 
         self.low_water_mark_send = low_water_mark_send
         self.high_water_mark_send = high_water_mark_send
@@ -119,30 +114,35 @@ class AbstractHBIC:
         self.low_water_mark_recv = low_water_mark_recv
         self.high_water_mark_recv = high_water_mark_recv
         self._recv_obj_waiters = deque()
+
         self._corun_mutex = asyncio.Lock(loop=loop)
 
-        if auto_connect:
-            loop.call_soon(self.connect)
-
     def __str__(self):
-        return self.net_info
+        return f'HBI:{self.net_info}'
 
     def __repr__(self):
-        return self.net_info
-
-    def _handle_landing_error(self, exc):
-        self.disconnect(f'landing error: {exc}')
-
-    def _handle_peer_error(self, message, stack):
-        logger.fatal(f'peer error occurred: {message}\n{stack}')
-        self.disconnect('peer error: {message}')
+        return repr(str(self))
 
     def _handle_wire_error(self, exc):
         import traceback
+        traceback.print_exc()
+        logger.fatal(f'HBI {self.net_info} wire error occurred, forcing disconnection.')
         err_stack = traceback.format_exc()
-        if not isinstance(exc, WireError):
-            exc = WireError(str(exc))
         self._loop.create_task(self._disconnect(exc, err_stack))
+
+    def _handle_landing_error(self, exc):
+        import traceback
+        traceback.print_exc()
+        logger.fatal(f'HBI {self.net_info} landing error occurred, forcing disconnection.')
+        err_stack = traceback.format_exc()
+        self._loop.create_task(self._disconnect(exc, err_stack))
+
+    def _handle_peer_error(self, message, stack):
+        logger.fatal(rf'''
+HBI {self.net_info} peer error occurred: {message}
+{stack}
+''')
+        self._loop.create_task(self._disconnect())
 
     @property
     def loop(self):
@@ -150,100 +150,84 @@ class AbstractHBIC:
 
     @property
     def connected(self):
-        transport = self.transport
-        if not transport:
-            return False
-        raise NotImplementedError
+        return self._wire is not None
 
     @property
     def net_info(self):
         if not self.addr:
             return '<destroyed>'
-        transport = self.transport
-        if not transport:
+        _wire = self._wire
+        if not _wire:
             return '<unwired>'
-        return '[hbic wired to ' + transport + ']'
+        return f'[{_wire}]'
 
-    def add_connection_listener(self, listener):
-        self._conn_listeners[listener] = None
+    def run_until_disconnected(self, ensure_connected=True):
+        if not self.connected:
+            # already disconnected
 
-    def remove_connection_listener(self, listener):
-        del self._conn_listeners[listener]
+            if ensure_connected:
+                # initiate connection now
+                self.connect()
+            else:
+                # nop in this case
+                return
 
-    def _abort_tasks(self, exc=None):
+        if self._disc_fut is None:
+            self._disc_fut = self._loop.create_future()
+        self._loop.run_until_complete(self._disc_fut)
+
+    def disconnect(self, err_reason=None):
+        import traceback
+        err_stack = traceback.format_exc()
+
+        if err_reason is not None:
+            logger.fatal(f'disconnecting {self.net_info} due to error: {err_reason}\n{err_stack or ""}')
+
+        # this can be called from any thread
+        self._loop.call_soon_threadsafe(self._loop.create_task, self._disconnect(err_reason, err_stack))
+
+    async def wait_disconnected(self):
+        if self._disc_fut is None:
+            self._disc_fut = self._loop.create_future()
+        await self._disc_fut
+
+    def _disconnect(self, err_reason=None, err_stack=None):
+        raise NotImplementedError('subclass should implement this as a coroutine')
+
+    def _disconnected(self, exc=None):
+        if exc:
+            logger.warning(f'HBI connection unwired due to error: {exc}', exc_info=True)
+
         # abort pending tasks
         self._recv_buffer = None
         if self._recv_obj_waiters:
             if not exc:
-                exc = WireError('disconnected')
+                exc = RuntimeError('HBI disconnected')
             waiters = self._recv_obj_waiters
             self._recv_obj_waiters = deque()
             for waiter in waiters:
                 waiter.set_exception(exc)
 
-        # notify listeners
-        for cl in tuple(self._conn_listeners):
-            if False is cl.disconnected(self):
-                del self._conn_listeners[cl]
+        self._send_mutex.shutdown(exc)
 
-    def run_until_disconnected(self):
-        if self.connected:
-            fut = self._disconn_fut
-            if fut is None:
-                fut = self._loop.create_future()
-                self._disconn_fut = fut
-            self._loop.run_until_complete(fut)
+        fut = self._disc_fut
+        if fut is not None:
+            self._disc_fut = None
+            fut.set_result(self)
 
-    def _disconnect(self, err_reason=None, err_stack=None):
+    def _peer_eof(self):
+        if self.send_only:
+            pass
+        self.disconnect()
+
+    def _connect(self):
         raise NotImplementedError('subclass should implement this as a coroutine')
 
-    def disconnect(self, err_reason=None):
-        import traceback
-        err_stack = traceback.format_exc()
-        # this can be called from any thread
-        self._loop.call_soon_threadsafe(self._loop.create_task, self._disconnect(err_reason, err_stack))
-
-    def _wire_up(self):
-        raise NotImplementedError('subclass should implement this as a coroutine')
-
-    async def _connect(self):
-        assert not self.connected, 'attempt new connection while connected ?!'
-
-        try:
-
-            await self._wire_up()
-
-        except Exception as exc:
-            fut = self._conn_fut
-
-            if self.auto_connect:
-                # attempt auto re-connection
-                logger.warning('connecting failed, retrying later', exc_info=True)
-                self._loop.call_later(self.reconn_delay, self.connect)
-                if fut is None:
-                    fut = self._loop.create_future()
-                    self._conn_fut = fut
-                return fut
-
-            if fut is not None:
-                self._conn_fut = None
-                fut.set_exception(exc)
-
-            raise
-
-        else:
-
-            fut = self._conn_fut
-            if fut is not None:
-                self._conn_fut = None
-                fut.set_result(self)
-
-        return self
-
-    async def connect(self, addr=None, net_opts=None):
+    def connect(self, addr=None, net_opts=None):
         if self.connected:
             if (addr is None or addr == self.addr) and (net_opts is None or net_opts == self.net_opts):
-                return self
+                # already connected as expected
+                return
             raise asyncio.InvalidStateError(
                 'already connected to different addr, disconnect before connect to else where'
             )
@@ -254,10 +238,20 @@ class AbstractHBIC:
         if not self.addr:
             raise asyncio.InvalidStateError('attempt connecting without addr')
 
-        return await self._connect()
+        # this can be called from any thread
+        self._loop.call_soon_threadsafe(self._loop.create_task, self._connect())
+
+    async def wait_connected(self):
+        if self.connected:
+            return
+
+        if self._conn_fut is None:
+            self._conn_fut = self._loop.create_future()
+        await self._conn_fut
 
     def run_until_connected(self):
-        return self._loop.run_until_complete(self.connect())
+        self.connect()
+        return self._loop.run_until_complete(self.wait_connected())
 
     def fire(self, code, bufs=None):
         """
@@ -292,17 +286,17 @@ class AbstractHBIC:
 
     async def co_send_code(self, code, wire_dir=None):
         if not self._corun_mutex.locked():
-            raise UsageError('not in corun mode')
+            raise RuntimeError('HBI not in corun mode')
         await self._send_code(code, wire_dir)
 
     async def co_send_data(self, bufs):
         if not self._corun_mutex.locked():
-            raise UsageError('not in corun mode')
+            raise RuntimeError('HBI not in corun mode')
         await self._send_data(bufs)
 
     async def _send_code(self, code, wire_dir=None):
         if not self.connected:
-            raise WireError('not connected')
+            raise RuntimeError('HBI wire not connected')
 
         # convert wire_dir as early as possible, will save conversions in case the code is of complex structure
         if wire_dir is None:
@@ -395,7 +389,14 @@ class AbstractHBIC:
                 return exc,
             finally:
                 if len(defs) > 0:
-                    logger.debug('sth defined by landed code.', {"defs": defs, "code": code})
+                    logger.debug(rf'''
+HBI {self.net_info}, landed code defined something:
+--CODE--
+{code!s}
+--DEFS--
+{defs!r}
+--====--
+''')
         if 'corun' == wire_dir:
             # land the coro and run it
             defs = {}
@@ -423,13 +424,13 @@ class AbstractHBIC:
                 if len(defs) > 0:
                     logger.warning('landed wire code defines sth.', {"defs": defs, "code": code})
         else:
-            raise WireError('unknown wire directive [{}]'.format(wire_dir))
+            raise RuntimeError('HBI unknown wire directive [{}]'.format(wire_dir))
 
     def _begin_offload(self, sink):
         if self._data_sink is not None:
-            raise UsageError('already offloading data')
+            raise RuntimeError('HBI already offloading data')
         if not callable(sink):
-            raise UsageError('HBI sink to offload data must be a function accepting data chunks')
+            raise RuntimeError('HBI sink to offload data must be a function accepting data chunks')
         self._data_sink = sink
         if self._recv_buffer.nbytes > 0:
             # having buffered data, dump to sink
@@ -446,7 +447,7 @@ class AbstractHBIC:
 
     def _end_offload(self, read_ahead=None, sink=None):
         if sink is not None and sink is not self._data_sink:
-            raise UsageError('resuming from wrong sink')
+            raise RuntimeError('HBI resuming from wrong sink')
         self._data_sink = None
         if read_ahead:
             self._recv_buffer.appendleft(read_ahead)
@@ -476,7 +477,7 @@ class AbstractHBIC:
             nonlocal buf
 
             if chunk is None:
-                fut.set_exception(WireError('disconnected'))
+                fut.set_exception(RuntimeError('HBI disconnected'))
                 self._end_offload(None, data_sink)
 
             try:
@@ -522,7 +523,7 @@ class AbstractHBIC:
                         # and done
                         return
                     except Exception as exc:
-                        raise UsageError('buffer source raised exception') from exc
+                        raise RuntimeError('HBI buffer source raised exception') from exc
             except Exception as exc:
                 self._handle_wire_error(exc)
                 fut.set_exception(exc)
@@ -533,17 +534,17 @@ class AbstractHBIC:
 
     async def recv_data(self, bufs):
         if self._corun_mutex.locked():
-            raise UsageError('this should only be used in hosting mode')
+            raise RuntimeError('HBI recv_data should only be used in hosting mode')
         await self._recv_data(bufs)
 
     async def co_recv_data(self, bufs):
         if not self._corun_mutex.locked():
-            raise UsageError('not in corun mode')
+            raise RuntimeError('HBI not in corun mode')
         await self._recv_data(bufs)
 
     async def co_recv_obj(self):
         if not self._corun_mutex.locked():
-            raise UsageError('not in corun mode')
+            raise RuntimeError('HBI not in corun mode')
 
         while True:
             # continue poll one obj from buffer
@@ -639,6 +640,7 @@ class AbstractHBIC:
                     return
         except Exception as exc:
             self._handle_wire_error(exc)
+            raise
 
     def corun(self, coro):
 

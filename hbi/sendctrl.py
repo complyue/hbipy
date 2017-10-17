@@ -1,6 +1,10 @@
 import asyncio
 from collections import deque
 
+__all__ = [
+    'SendCtrl',
+]
+
 
 class SendCtrl(asyncio.Lock):
     def __init__(self, flowing=True, *, loop=None, **kwargs):
@@ -66,16 +70,20 @@ class SendCtrl(asyncio.Lock):
         if not self._flowing:
             return
 
-        # find 1st non-canceled waiter to trigger
+        # trigger 1st non-canceled waiter
         while self._waiters:
             fut = self._waiters.popleft()
-            if not fut.done():  # just throw away canceled waiters
-                # trigger this waiter now
-                fut.set_result(None)
 
-                # schedule one more unleash to run later.
-                # as this future's awaiter will send more data in next tick, and it'll run before next _unleash_one()
-                # here scheduled after the set_result() call, it's fairly possible `restrain` has been called then.
-                # python default loop and uvloop is confirmed working this way
-                self._loop.call_soon(self._unleash_one)
-                return
+            if fut.done():
+                # just throw away canceled waiters
+                continue
+
+            # trigger this waiter now
+            fut.set_result(None)
+
+            # schedule one more unleash to run later.
+            # as this future's awaiter will send more data in next tick, and it'll run before next _unleash_one()
+            # here scheduled after the set_result() call, it's fairly possible `restrain` has been called then.
+            # python default loop and uvloop is confirmed working this way
+            self._loop.call_soon(self._unleash_one)
+            return

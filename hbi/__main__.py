@@ -8,7 +8,7 @@ assert __name__.endswith('__main__')
 
 
 def print_usage():
-    print('HBI server starter, usage:\n  python -m hbi [-p port] [-h host] <module>', file=sys.stderr)
+    print('HBI module runner, usage:\n  python -m hbi [-l] [-p port] [-h host] <module>', file=sys.stderr)
 
 
 host = None
@@ -28,6 +28,10 @@ def main():
     while arg_i + 1 < len(sys.argv):
         arg_i += 1
 
+        if '-l' == sys.argv[arg_i]:
+            run_server = True
+            continue
+
         if '-p' == sys.argv[arg_i]:
             arg_i += 1
             port = int(sys.argv[arg_i])
@@ -36,11 +40,6 @@ def main():
         if '-h' == sys.argv[arg_i]:
             arg_i += 1
             host = sys.argv[arg_i]
-            continue
-
-        if '-l' == sys.argv[arg_i]:
-            run_server = True
-            arg_i += 1
             continue
 
         if sys.argv[arg_i].startswith('-'):
@@ -92,6 +91,7 @@ def main():
                 'host': host, 'port': port,
             }, loop=loop)
             hbic.run_until_connected()
+            print(f'Connected {hbic}', file=sys.stderr)
 
             hbi_boot = ctx.get('hbi_boot', None)
             if hbi_boot is not None:
@@ -105,12 +105,13 @@ def main():
                 hbic.fire('hbi_boot()')
 
             hbic.run_until_disconnected()
+
+            disconn_cb = ctx.get('hbi_disconnected', None)
+            if disconn_cb is not None:
+                disconn_cb()
+
         except KeyboardInterrupt:
             pass
-        except:
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-            return
 
 
 main()

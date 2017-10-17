@@ -5,6 +5,10 @@ Run arbitrary Python code in supplied context and return evaluated value of last
 
 import ast
 
+__all__ = [
+    'run_in_context',
+]
+
 
 def run_in_context(code, context, defs={}):
     ast_ = ast.parse(code, '<code>', 'exec')
