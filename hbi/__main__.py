@@ -15,9 +15,11 @@ host = None
 port = 3232
 modu_name = None
 
+hbi_argv = []
+
 
 def main():
-    global host, port, modu_name
+    global host, port, modu_name, hbi_argv
 
     if len(sys.argv) <= 1:
         return print_usage()
@@ -27,6 +29,10 @@ def main():
     arg_i = 0
     while arg_i + 1 < len(sys.argv):
         arg_i += 1
+
+        if '--' == sys.argv[arg_i]:
+            hbi_argv = sys.argv[arg_i + 1:]
+            break
 
         if '-l' == sys.argv[arg_i]:
             run_server = True
@@ -63,8 +69,10 @@ def main():
         def ctx_factory():
             nonlocal hbis
 
-            ctx = runpy.run_module(modu_name)
-            ctx['_server_'] = hbis
+            ctx = runpy.run_module(modu_name, {
+                'hbi_host': host, 'hbi_port': port, 'hbi_argv': hbi_argv,
+                'hbi_server': hbis, 'hbi_peer': None,
+            }, run_name='__hbi_accepting__')
             return ctx
 
         print(f'Starting HBI server with module {modu_name} on {host or "*"}:{port}', file=sys.stderr)
@@ -73,7 +81,8 @@ def main():
         }, loop=loop))
         try:
             runpy.run_module(modu_name, {
-                '_server_': hbis, '_host_': host, '_port_': port,
+                'hbi_host': host, 'hbi_port': port, 'hbi_argv': hbi_argv,
+                'hbi_server': hbis, 'hbi_peer': None,
             }, run_name='__hbi_serving__')
             loop.run_until_complete(hbis.wait_closed())
         except KeyboardInterrupt:
@@ -86,12 +95,20 @@ def main():
 
         print(f'Connecting to HBI server {host}:{port} with module {modu_name}', file=sys.stderr)
         try:
-            ctx = runpy.run_module(modu_name)
-            hbic = hbi.HBIC(ctx, addr={
-                'host': host, 'port': port,
-            }, loop=loop)
-            hbic.run_until_connected()
-            print(f'Connected {hbic}', file=sys.stderr)
+            ctx = runpy.run_module(modu_name, {
+                'hbi_host': host, 'hbi_port': port, 'hbi_argv': hbi_argv,
+                'hbi_server': None, 'hbi_peer': None,
+            }, run_name='__hbi_connecting__')
+
+            try:
+                hbic = hbi.HBIC(ctx, addr={
+                    'host': host, 'port': port,
+                }, loop=loop)
+                hbic.run_until_connected()
+                print(f'Connected {hbic}', file=sys.stderr)
+            except OSError as exc:
+                print(f'Connection failed: {exc}', file=sys.stderr)
+                sys.exit(1)
 
             hbi_boot = ctx.get('hbi_boot', None)
             if hbi_boot is not None:
@@ -105,10 +122,6 @@ def main():
                 hbic.fire('hbi_boot()')
 
             hbic.run_until_disconnected()
-
-            disconn_cb = ctx.get('hbi_disconnected', None)
-            if disconn_cb is not None:
-                disconn_cb()
 
         except KeyboardInterrupt:
             pass

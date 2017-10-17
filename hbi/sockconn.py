@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 
-from .buflist import *
 from .bytesbuf import *
 from .conn import *
 from .proto import *
@@ -44,8 +43,7 @@ class SocketProtocol(asyncio.Protocol):
 
         self.hbic._wire = self
 
-        self.hbic._recv_buffer = BufferList()
-        self.hbic._send_mutex.startup()
+        self.hbic._connected()
 
     def pause_writing(self):
         self.hbic._send_mutex.obstruct()
@@ -102,17 +100,20 @@ class HBIC(AbstractHBIC):
         if self._wire:
             raise asyncio.InvalidStateError('requesting new connection with transport already wired')
 
-        transport, protocol = await self._loop.create_connection(
-            lambda: SocketProtocol(self),
-            self.addr['host'], self.addr['port'],
-            **self.net_opts or {}
-        )
-        assert protocol is self._wire and transport is protocol.transport, 'conn not made atm ?!'
+        try:
 
-        fut = self._conn_fut
-        if fut is not None:
-            self._conn_fut = None
-            fut.set_result(self)
+            transport, protocol = await self._loop.create_connection(
+                lambda: SocketProtocol(self),
+                self.addr['host'], self.addr['port'],
+                **self.net_opts or {}
+            )
+            assert protocol is self._wire and transport is protocol.transport, 'conn not made atm ?!'
+
+        except Exception as exc:
+            fut = self._conn_fut
+            if fut is not None:
+                self._conn_fut = None
+                fut.set_exception(exc)
 
     async def _send_text(self, code, wire_dir=b''):
         if isinstance(code, bytes):

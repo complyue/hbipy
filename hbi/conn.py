@@ -6,6 +6,7 @@ import logging
 from collections import deque
 from typing import Sequence
 
+from .buflist import *
 from .context import run_in_context
 from .sendctrl import SendCtrl
 
@@ -91,7 +92,7 @@ class AbstractHBIC:
             **kwargs
     ):
         super().__init__(**kwargs)
-        context['_peer_'] = self
+        context['hbi_peer'] = self
         self.context = context
         self.addr = addr
         self.net_opts = net_opts
@@ -138,11 +139,7 @@ class AbstractHBIC:
         self._loop.create_task(self._disconnect(exc, err_stack))
 
     def _handle_peer_error(self, message, stack):
-        logger.fatal(rf'''
-HBI {self.net_info} peer error occurred: {message}
-{stack}
-''')
-        self._loop.create_task(self._disconnect())
+        self.disconnect(RuntimeError(f'Peer error: {message}'), stack)
 
     @property
     def loop(self):
@@ -176,12 +173,20 @@ HBI {self.net_info} peer error occurred: {message}
             self._disc_fut = self._loop.create_future()
         self._loop.run_until_complete(self._disc_fut)
 
-    def disconnect(self, err_reason=None):
-        import traceback
-        err_stack = traceback.format_exc()
-
+    def disconnect(self, err_reason=None, err_stack=None):
         if err_reason is not None:
-            logger.fatal(f'disconnecting {self.net_info} due to error: {err_reason}\n{err_stack or ""}')
+            if err_stack is None:
+                import traceback
+                err_stack = traceback.format_exc()
+
+            logger.fatal(rf'''
+HBI disconnecting {self.net_info} due to error: {err_reason}
+{err_stack or ''}
+''')
+
+        disconn_cb = self.context.get('hbi_disconnecting', None)
+        if disconn_cb is not None:
+            disconn_cb(err_reason)
 
         # this can be called from any thread
         self._loop.call_soon_threadsafe(self._loop.create_task, self._disconnect(err_reason, err_stack))
@@ -215,10 +220,14 @@ HBI {self.net_info} peer error occurred: {message}
             self._disc_fut = None
             fut.set_result(self)
 
+        disconn_cb = self.context.get('hbi_disconnected', None)
+        if disconn_cb is not None:
+            disconn_cb()
+
     def _peer_eof(self):
-        if self.send_only:
-            pass
-        self.disconnect()
+        peer_done_cb = self.context.get('hbi_peer_done', None)
+        if peer_done_cb is not None:
+            peer_done_cb()
 
     def _connect(self):
         raise NotImplementedError('subclass should implement this as a coroutine')
@@ -240,6 +249,20 @@ HBI {self.net_info} peer error occurred: {message}
 
         # this can be called from any thread
         self._loop.call_soon_threadsafe(self._loop.create_task, self._connect())
+
+    def _connected(self):
+
+        self._recv_buffer = BufferList()
+        self._send_mutex.startup()
+
+        fut = self._conn_fut
+        if fut is not None:
+            self._conn_fut = None
+            fut.set_result(self)
+
+        conn_cb = self.context.get('hbi_connected', None)
+        if conn_cb is not None:
+            conn_cb()
 
     async def wait_connected(self):
         if self.connected:

@@ -6,45 +6,80 @@ HBI Echo server and client
 if '__hbi_serving__' == __name__:
     # modu run per HBI server initialization
 
-    # _server_/_host_/_port_ are available, _server_ has just started listening
-    print(f'Echo server listening {_host_}:{_port_}')
+    # hbi_host/hbi_port are available, the server has just started listening
+    print(f'Echo server listening {hbi_host}:{hbi_port}')
 
-else:
-    # modu run per HBI connection
+elif '__hbi_accepting__' == __name__:
+    # modu run per client HBI connection accepted at server side
 
-    # _server_ is assigned at server side on each client connection
-    _server_ = None
-
-    # _peer_ is assigned on client/server HBIC construction
-    _peer_ = None
-
-    active_exiting = False
+    # hbi_peer is assigned after the module finished initialization, so it's okay to be used in functions defined here,
+    # but during module initialization, it is None
+    hbi_peer = None
 
 
     def hbi_boot():
+        global hbi_host, hbi_port  # supplied by HBI, at both server/client side
+        global hbi_argv  # supplied by HBI, from command line, whatever after --
+        global hbi_server  # supplied by HBI, always be None at client side
+
+        # running as echo server
+        assert hbi_server is not None
+
+        # if `hbi_boot` is triggered at server side, that means client modu doesn't provide an `hbi_boot`,
+        # but this `hbi.echo` modu surely does. so here we know that peer is an unknown client modu,
+        # just print warning message to it.
+        hbi_peer.fire(r'''
+import sys
+print('This is echo server, merely serving `echo(*args, **kwargs)`, other code will obviously fail.', file=sys.stderr)
+''')
+        hbi_peer.disconnect()
+
+
+    def hbi_peer_done():
+        print(f'Client {hbi_peer} quited.')
+
+
+    def hbi_disconnecting(err_reason=None):
+        print(f'Client {hbi_peer} disconnecting.')
+        if err_reason is not None:
+            print(f'  - Due to reason: {err_reason}')
+
+
+    def echo(*args, **kwargs):
+        # assuming peer is Python interpreter for now, language adaptive mechanisms could be added
+
+        hbi_peer.fire(rf'''
+print('\n--BEGIN-REMOTE-MSG--')
+print(*({args!r}), **({kwargs!r}))
+print('---END--REMOTE-MSG--', flush=True)
+''')
+
+elif '__hbi_connecting__' == __name__:
+    # modu run per client HBI connection
+
+    # hbi_peer is assigned after the module finished initialization, so it's okay to be used in functions defined here,
+    # but during module initialization, it is None
+    hbi_peer = None
+
+
+    def hbi_boot():
+        global hbi_host, hbi_port  # supplied by HBI, at both server/client side
+        global hbi_argv  # supplied by HBI, from command line, whatever after --
+        global hbi_server  # supplied by HBI, always be None at client side
+
+        # running as echo client
+        assert hbi_server is None
+
         import sys
         import threading
         from code import InteractiveConsole
 
-        if _server_ is not None:
-            # running as echo server
-            # if `hbi_boot` is triggered at server side, that means client modu doesn't provide an `hbi_boot`,
-            # but this `hbi.echo` modu surely does. so here we know that peer is an unknown client modu,
-            # just print warning message to it.
-            _peer_.fire(r'''
-import sys
-print('This is echo server, merely serving `echo(*args, **kwargs)`, other code will obviously fail.', file=sys.stderr)
-''')
-            _peer_.disconnect()
-            return
-
         # run client repl like a console, but fire the interactive source to be landed remotely
-
         class HBIConsole(InteractiveConsole):
 
             def runsource(self, source, filename="<input>", symbol="single"):
 
-                if not _peer_.connected:
+                if not hbi_peer.connected:
                     print('HBI disconnected, exiting...', file=sys.stderr)
                     raise SystemExit
 
@@ -52,25 +87,28 @@ print('This is echo server, merely serving `echo(*args, **kwargs)`, other code w
                     # empty source, nop
                     return
 
-                _peer_.fire(source)
+                hbi_peer.fire(source)
 
         console = HBIConsole()
         sys.ps1 = 'hbi> '
 
         def console_session():
-            global active_exiting
+            global hbi_disconnected
 
             try:
                 console.interact(fr'''
-HBI connected {_peer_.net_info}
+HBI connected {hbi_peer.net_info}
 
                             -==[ WARNING ]==- 
 !!! ANY code you submit here will be executed by the server, take care !!!
+                            -==[ WARNING ]==- 
 ''', r'''
 Bye.
 ''')
-                active_exiting = True
-                _peer_.disconnect()
+                # actively disconnecting, clear the disconnection callback
+                hbi_disconnected = lambda: None
+
+                hbi_peer.disconnect()
             except SystemExit:
                 pass
 
@@ -80,17 +118,11 @@ Bye.
 
 
     def hbi_disconnected():
-        global active_exiting
+        # defined here to handle unexpected disconnection
 
         import sys
-        if not active_exiting:
-            print('HBI connection closed by peer.', flush=True, file=sys.stderr)
+        print('HBI connection closed by peer.', flush=True, file=sys.stderr)
         sys.exit(1)
 
-
-    def echo(*args, **kwargs):
-        _peer_.fire(rf'''
-print('\n--BEGIN-REMOTE-MSG--')
-print(*({args!r}), **({kwargs!r}))
-print('---END--REMOTE-MSG--', flush=True)
-''')
+else:
+    assert False, f'Unexpected HBI module run name: {__name__} ?!'
