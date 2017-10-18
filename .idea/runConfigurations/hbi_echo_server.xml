@@ -12,7 +12,7 @@
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <module name="hbi" />
     <option name="SCRIPT_NAME" value="hbi" />
-    <option name="PARAMETERS" value="-l hbi.echo" />
+    <option name="PARAMETERS" value="-h 127.0.0.1 -l hbi.echo" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <method />
