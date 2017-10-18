@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 
-from .bytesbuf import *
 from .conn import *
 from .proto import *
 
@@ -139,9 +138,6 @@ class HBIC(AbstractHBIC):
         await self._send_mutex.flowing()
         self._wire.transport.write(buf)
 
-    def _recv_water_pos(self):
-        return self._recv_buffer.nbytes
-
     def _pause_recv(self):
         if self._wire._recv_paused:
             return
@@ -178,14 +174,6 @@ handlePeerErr({err_reason!r},{err_stack!r})
         _wire.transport.write_eof()
         _wire.transport.close()
         # connection_lost will be called by asyncio loop after out-going packets flushed
-
-    def _data_received(self, chunk):
-        # push to buffer
-        if chunk:
-            self._recv_buffer.append(BytesBuffer(chunk))
-
-        # read wire regarding corun/hosting mode and flow ctrl
-        self._read_wire()
 
     def _land_one(self):
         try:

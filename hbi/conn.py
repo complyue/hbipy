@@ -7,6 +7,7 @@ from collections import deque
 from typing import Sequence
 
 from .buflist import *
+from .bytesbuf import *
 from .context import run_in_context
 from .sendctrl import SendCtrl
 
@@ -598,6 +599,17 @@ HBI {self.net_info}, landed code defined something:
         self._recv_obj_waiters.append(fut)
         self._read_wire()
         return await fut
+
+    def _recv_water_pos(self):
+        return self._recv_buffer.nbytes
+
+    def _data_received(self, chunk):
+        # push to buffer
+        if chunk:
+            self._recv_buffer.append(BytesBuffer(chunk))
+
+        # read wire regarding corun/hosting mode and flow ctrl
+        self._read_wire()
 
     def _read_wire(self):
         try:
