@@ -126,7 +126,7 @@ HBI connected {hbi_peer.net_info}
 Bye.
 ''')
                 # actively disconnecting, clear the disconnection callback
-                hbi_disconnected = lambda: None
+                hbi_disconnected = None
 
                 hbi_peer.disconnect()
             except SystemExit:
@@ -137,10 +137,16 @@ Bye.
         th.start()
 
 
-    def hbi_disconnected():
+    def hbi_disconnected(err_reason=None):
         # defined here to handle unexpected disconnection
         import sys
-        logger.warning('HBI connection closed by peer.')
+        if err_reason is None:
+            logger.error('HBI connection closed by peer.')
+        else:
+            logger.error(rf'''
+HBI connection closed by peer due to error:
+{err_reason}
+''')
         sys.exit(1)
 
 

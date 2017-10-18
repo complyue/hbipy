@@ -18,7 +18,14 @@ def __hbi_land__(code, wire_dir):
 ''')
 
 
-def hbi_disconnected():
+def hbi_disconnected(err_reason=None):
     import sys
-    logger.info('HBI connection closed by peer.')
-    sys.exit(0)
+    if err_reason is None:
+        logger.info('HBI connection closed by peer.')
+        sys.exit(0)
+    else:
+        logger.error(rf'''
+HBI connection closed by peer due to error:
+{err_reason}
+''')
+        sys.exit(1)
