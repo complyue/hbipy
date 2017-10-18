@@ -124,5 +124,18 @@ Bye.
         print('HBI connection closed by peer.', flush=True, file=sys.stderr)
         sys.exit(1)
 
+
+    def __hbi_land__(code, wire_dir):
+        # this magic method if defined, hijacks code received over HBI wire for local execution (landing)
+
+        print(rf'''
+-== LANDING CODE =-
+[#{wire_dir}]{code}
+===================
+''', flush=True)
+
+        # still perform normal landing
+        return NotImplemented
+
 else:
     assert False, f'Unexpected HBI module run name: {__name__} ?!'

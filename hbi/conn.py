@@ -138,8 +138,8 @@ class AbstractHBIC:
         err_stack = traceback.format_exc()
         self._loop.create_task(self._disconnect(exc, err_stack))
 
-    def _handle_peer_error(self, message, stack):
-        self.disconnect(RuntimeError(f'Peer error: {message}'), stack)
+    def _handle_peer_error(self, message, stack=None):
+        self.disconnect(f'Peer error: {message}', stack)
 
     @property
     def loop(self):
@@ -175,7 +175,7 @@ class AbstractHBIC:
 
     def disconnect(self, err_reason=None, err_stack=None):
         if err_reason is not None:
-            if err_stack is None:
+            if err_stack is None and isinstance(err_reason, BaseException):
                 import traceback
                 err_stack = traceback.format_exc()
 
@@ -437,7 +437,10 @@ HBI {self.net_info}, landed code defined something:
             # got wire affair packet, land it
             if self._wire_ctx is None:  # populate this wire's ctx jit
                 self._wire_ctx = {attr: getattr(self, attr) for attr in dir(self)}
-                self._wire_ctx['handlePeerErr'] = self._handle_peer_error  # function name from hbi js
+
+                # universal functions for HBI peers in different languages
+                self._wire_ctx['handlePeerErr'] = self._handle_peer_error
+
             defs = {}
             try:
                 run_in_context(code, self._wire_ctx, defs)
