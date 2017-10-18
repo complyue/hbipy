@@ -1,10 +1,8 @@
 import asyncio
 import contextlib
-import functools
 import inspect
 import logging
 from collections import deque
-from typing import Sequence
 
 from .buflist import *
 from .bytesbuf import *
@@ -12,8 +10,8 @@ from .context import run_in_context
 from .sendctrl import SendCtrl
 
 __all__ = [
-    'corun_with',
     'AbstractHBIC',
+    'corun_with', 'run_coro_with',
 ]
 
 logger = logging.getLogger(__name__)
@@ -161,14 +159,14 @@ class AbstractHBIC:
 
     def run_until_disconnected(self, ensure_connected=True):
         if not self.connected:
-            # already disconnected
+            # disconnected atm
 
-            if ensure_connected:
-                # initiate connection now
-                self.connect()
-            else:
+            if not ensure_connected:
                 # nop in this case
                 return
+
+            # initiate connection now
+            self.connect()
 
         if self._disc_fut is None:
             self._disc_fut = self._loop.create_future()
@@ -272,12 +270,16 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
         if self.connected:
             return
 
+        self.connect()
+
         if self._conn_fut is None:
             self._conn_fut = self._loop.create_future()
         await self._conn_fut
 
     def run_until_connected(self):
-        self.connect()
+        if self.connected:
+            return
+
         return self._loop.run_until_complete(self.wait_connected())
 
     def fire(self, code, bufs=None):
@@ -707,14 +709,16 @@ HBI {self.net_info}, landed code defined something:
             self._handle_wire_error(exc)
             raise
 
-    async def corun(self, coro):
-
+    async def _corun(self, coro):
         # use send+corun mutex to prevent interference with other sendings or coros
         with await self._send_mutex, await self._corun_mutex:
             return await coro
 
+    def corun(self, coro):
+        return self._loop.create_task(self._corun(coro))
+
     def run_coro(self, coro):
-        self._loop.run_until_complete(self.corun(coro))
+        self._loop.run_until_complete(self._corun(coro))
 
     async def send_corun(self, code, bufs=None):
         if self._corun_mutex.locked():
@@ -728,6 +732,8 @@ HBI {self.net_info}, landed code defined something:
                 if bufs is not None:
                     await self._send_data(bufs)
 
+    # implement HBIC as reusable context manager
+
     def __enter__(self):
         self.run_until_connected()
         return self
@@ -735,6 +741,8 @@ HBI {self.net_info}, landed code defined something:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.disconnect()
         self.run_until_disconnected(ensure_connected=False)
+
+    # implement HBIC as reusable async context manager
 
     async def __aenter__(self):
         await self.wait_connected()
@@ -745,28 +753,29 @@ HBI {self.net_info}, landed code defined something:
         await self.wait_disconnected()
 
 
-def corun_with(coro, hbics: Sequence[AbstractHBIC]):
+def _loop_of_hbics(hbics):
     loop = None
     for hbic in hbics:
         if loop is None:
             loop = hbic._loop
         elif loop is not hbic._loop:
-            raise Exception('corun with hbics on different loops is not possible')
+            raise RuntimeError('HBI corun with hbics on different loops is not possible')
+    return loop
 
-    @functools.wraps(coro)
-    async def wrapper():
-        with contextlib.ExitStack() as stack:
-            # use mutexes of all hbics
-            for hbic in hbics:
-                # use send+corun mutex to prevent interference with other sendings or coros
-                stack.enter_context(await hbic._send_mutex)
-                stack.enter_context(await hbic._corun_mutex)
 
-            try:
-                return await coro
-            except Exception as exc:
-                for hbic in hbics:
-                    hbic._handle_landing_error(exc)
-                raise
+async def _corun_with(coro, hbics):
+    with contextlib.ExitStack() as stack:
+        # use mutexes of all hbics
+        for hbic in hbics:
+            # use send+corun mutex to prevent interference with other sendings or coros
+            stack.enter_context(await hbic._send_mutex)
+            stack.enter_context(await hbic._corun_mutex)
+        return await coro
 
-    return loop.create_task(wrapper())
+
+def corun_with(coro, hbics):
+    return _loop_of_hbics(hbics).create_task(_corun_with(coro, hbics))
+
+
+def run_coro_with(coro, hbics):
+    _loop_of_hbics(hbics).run_until_complete(_corun_with(coro, hbics))
