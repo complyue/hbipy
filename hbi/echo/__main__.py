@@ -129,9 +129,9 @@ Bye.
         # this magic method if defined, hijacks code received over HBI wire for local execution (landing)
 
         print(rf'''
--== LANDING CODE =-
+-== LANDING CODE ==-
 [#{wire_dir}]{code}
-===================
+====================
 ''', flush=True)
 
         # still perform normal landing
