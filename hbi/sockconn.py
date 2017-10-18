@@ -51,11 +51,15 @@ class SocketProtocol(asyncio.Protocol):
     def resume_writing(self):
         self.hbic._send_mutex.unleash()
 
+    def data_received(self, chunk):
+        self.hbic._data_received(chunk)
+
     def eof_received(self):
         self.hbic._peer_eof()
 
-    def data_received(self, chunk):
-        self.hbic._data_received(chunk)
+        if self.hbic.send_only:
+            # if this hbic is send-only, don't let the transport close itself on peer eof
+            return True
 
     def connection_lost(self, exc):
         self.hbic._disconnected(exc)
