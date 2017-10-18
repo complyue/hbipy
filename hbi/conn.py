@@ -193,6 +193,9 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
         self._loop.call_soon_threadsafe(self._loop.create_task, self._disconnect(err_reason, err_stack))
 
     async def wait_disconnected(self):
+        if not self.connected:
+            return
+
         if self._disc_fut is None:
             self._disc_fut = self._loop.create_future()
         await self._disc_fut
@@ -223,7 +226,7 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
 
         disconn_cb = self.context.get('hbi_disconnected', None)
         if disconn_cb is not None:
-            disconn_cb()
+            disconn_cb(exc)
 
     def _peer_eof(self):
         peer_done_cb = self.context.get('hbi_peer_done', None)
@@ -405,12 +408,35 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
             # got plain packet, land it
             defs = {}
             try:
+
                 return None, run_in_context(code, self.context, defs)
+
+            except SystemExit:
+                # soft kill by peer
+                conn_fut = self._conn_fut
+                if conn_fut is not None:
+                    self._conn_fut = None
+                    conn_fut.set_exception(SystemExit)
+
+                disc_fut = self._disc_fut
+                if disc_fut is not None:
+                    self._disc_fut = None
+                    disc_fut.set_exception(SystemExit)
+
+                waiters = self._recv_obj_waiters
+                self._recv_obj_waiters = deque()
+                for waiter in waiters:
+                    waiter.set_exception(SystemExit)
+
+                self.disconnect()
+                return SystemExit,
+
             except Exception as exc:
                 # try handle the error by hbic class
                 self._handle_landing_error(exc)
                 # return the err so the running coro also has a chance to handle it
                 return exc,
+
             finally:
                 if len(defs) > 0:
                     logger.debug(rf'''
@@ -421,6 +447,7 @@ HBI {self.net_info}, landed code defined something:
 {defs!r}
 --====--
 ''')
+
         if 'corun' == wire_dir:
             # land the coro and run it
             defs = {}
@@ -451,7 +478,7 @@ HBI {self.net_info}, landed code defined something:
                 if len(defs) > 0:
                     logger.warning('landed wire code defines sth.', {"defs": defs, "code": code})
         else:
-            raise RuntimeError('HBI unknown wire directive [{}]'.format(wire_dir))
+            raise RuntimeError(f'HBI unknown wire directive [{wire_dir}]')
 
     def _begin_offload(self, sink):
         if self._data_sink is not None:
@@ -680,19 +707,14 @@ HBI {self.net_info}, landed code defined something:
             self._handle_wire_error(exc)
             raise
 
-    def corun(self, coro):
+    async def corun(self, coro):
 
-        @functools.wraps(coro)
-        async def wrapper():
-            # use send+corun mutex to prevent interference with other sendings or coros
-            with await self._send_mutex, await self._corun_mutex:
-                try:
-                    return await coro
-                except Exception as exc:
-                    self._handle_landing_error(exc)
-                    raise
+        # use send+corun mutex to prevent interference with other sendings or coros
+        with await self._send_mutex, await self._corun_mutex:
+            return await coro
 
-        return self._loop.create_task(wrapper())
+    def run_coro(self, coro):
+        self._loop.run_until_complete(self.corun(coro))
 
     async def send_corun(self, code, bufs=None):
         if self._corun_mutex.locked():
@@ -705,6 +727,22 @@ HBI {self.net_info}, landed code defined something:
                 await self._send_code(code, b'corun')
                 if bufs is not None:
                     await self._send_data(bufs)
+
+    def __enter__(self):
+        self.run_until_connected()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
+        self.run_until_disconnected(ensure_connected=False)
+
+    async def __aenter__(self):
+        await self.wait_connected()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
+        await self.wait_disconnected()
 
 
 def corun_with(coro, hbics: Sequence[AbstractHBIC]):
