@@ -65,6 +65,8 @@ elif '__hbi_connecting__' == __name__:
     # but during module initialization, it is None
     hbi_peer = None
 
+    _land_code = False
+
 
     def hbi_boot():
         global hbi_host, hbi_port  # supplied by HBI, at both server/client side
@@ -82,6 +84,7 @@ elif '__hbi_connecting__' == __name__:
         class HBIConsole(InteractiveConsole):
 
             def runsource(self, source, filename="<input>", symbol="single"):
+                global _land_code  # to control local code landing
 
                 if not hbi_peer.connected:
                     logger.warning('HBI disconnected, exiting...')
@@ -89,6 +92,15 @@ elif '__hbi_connecting__' == __name__:
 
                 if len(source) <= 0:
                     # empty source, nop
+                    return
+
+                if '%land' == source.strip():
+                    _land_code = True
+                    logger.warning('%%% Now HBI code will be landed locally')
+                    return
+                if '%noland' == source.strip():
+                    _land_code = False
+                    logger.warning('%%% Now HBI code will NOT be landed locally')
                     return
 
                 hbi_peer.fire(source)
@@ -106,6 +118,10 @@ HBI connected {hbi_peer.net_info}
                             -==[ WARNING ]==- 
 !!! ANY code you submit here will be executed by the server, take care !!!
                             -==[ WARNING ]==- 
+
+&&& Now HBI code will{'' if _land_code else ' NOT'} be landed, 
+&&& you can control local landing with %land and %noland magic commands.
+
 ''', r'''
 Bye.
 ''')
@@ -132,13 +148,14 @@ Bye.
         # this magic method if defined, hijacks code received over HBI wire for local execution (landing)
 
         print(rf'''
--== LANDING CODE ==-
+-== CODE TO LAND ==-
 [#{wire_dir}]{code}
 ====================
 ''', flush=True)
 
-        # still perform normal landing
-        return NotImplemented
+        if _land_code:
+            # perform normal landing, i.e. to execute it locally
+            return NotImplemented
 
 else:
     assert False, f'Unexpected HBI module run name: {__name__} ?!'
