@@ -3,11 +3,15 @@ HBI Echo server and client
 
 """
 
+import logging
+
+logger = logging.getLogger(__package__)
+
 if '__hbi_serving__' == __name__:
     # modu run per HBI server initialization
 
     # hbi_host/hbi_port are available, the server has just started listening
-    print(f'Echo server listening {hbi_host}:{hbi_port}')
+    logger.info(f'Echo server listening {hbi_host}:{hbi_port}')
 
 elif '__hbi_accepting__' == __name__:
     # modu run per client HBI connection accepted at server side
@@ -36,13 +40,13 @@ print('This is echo server, merely serving `echo(*args, **kwargs)`, other code w
 
 
     def hbi_peer_done():
-        print(f'Client {hbi_peer} quited.', flush=True, file=sys.stderr)
+        logger.info(f'Client {hbi_peer} quited.')
 
 
     def hbi_disconnecting(err_reason=None):
-        print(f'Client {hbi_peer} disconnecting.', flush=True, file=sys.stderr)
+        logger.warning(f'Client {hbi_peer} disconnecting.')
         if err_reason is not None:
-            print(f'  - Due to reason: {err_reason}', flush=True, file=sys.stderr)
+            logger.warning(f'  - Due to reason: {err_reason}')
 
 
     def echo(*args, **kwargs):
@@ -80,8 +84,8 @@ elif '__hbi_connecting__' == __name__:
             def runsource(self, source, filename="<input>", symbol="single"):
 
                 if not hbi_peer.connected:
-                    print('HBI disconnected, exiting...', flush=True, file=sys.stderr)
-                    raise SystemExit
+                    logger.warning('HBI disconnected, exiting...')
+                    sys.exit(1)
 
                 if len(source) <= 0:
                     # empty source, nop
@@ -119,9 +123,8 @@ Bye.
 
     def hbi_disconnected():
         # defined here to handle unexpected disconnection
-
         import sys
-        print('HBI connection closed by peer.', flush=True, file=sys.stderr)
+        logger.warning('HBI connection closed by peer.')
         sys.exit(1)
 
 

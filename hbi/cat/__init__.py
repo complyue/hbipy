@@ -1,6 +1,7 @@
 import logging
 
+from .. import hbi_root_logger
+
 # enable debug messages for hbi
-hrl = logging.getLogger("hbi")
-if hrl.level > logging.DEBUG:
-    hrl.setLevel(logging.DEBUG)
+if hbi_root_logger.getEffectiveLevel() > logging.DEBUG:
+    hbi_root_logger.setLevel(logging.DEBUG)
