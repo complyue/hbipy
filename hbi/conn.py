@@ -413,30 +413,10 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
 
                 return None, run_in_context(code, self.context, defs)
 
-            except SystemExit:
-                # soft kill by peer
-                conn_fut = self._conn_fut
-                if conn_fut is not None:
-                    self._conn_fut = None
-                    conn_fut.set_exception(SystemExit)
-
-                disc_fut = self._disc_fut
-                if disc_fut is not None:
-                    self._disc_fut = None
-                    disc_fut.set_exception(SystemExit)
-
-                waiters = self._recv_obj_waiters
-                self._recv_obj_waiters = deque()
-                for waiter in waiters:
-                    waiter.set_exception(SystemExit)
-
-                self.disconnect()
-                return SystemExit,
-
             except Exception as exc:
                 # try handle the error by hbic class
                 self._handle_landing_error(exc)
-                # return the err so the running coro also has a chance to handle it
+                # return the err so if a coro running, it has a chance to capture it
                 return exc,
 
             finally:
@@ -675,6 +655,9 @@ HBI {self.net_info}, landed code defined something:
                             # started a coro during landing, stop draining wire, let the coro recv on-demand,
                             # and let subsequent incoming data to trigger hwm back pressure
                             return
+                        elif got[0] is not None:
+                            # exception occurred in hosting mode, raise for the event loop to handle it
+                            raise got[0]
                     return
 
                 # currently in corun mode
