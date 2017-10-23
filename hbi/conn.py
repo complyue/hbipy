@@ -698,10 +698,14 @@ HBI {self.net_info}, landed code defined something:
             return await coro
 
     def corun(self, coro):
+        """
+        Run a coroutine within which `co_*()` methods of this hbic can be called.
+
+        """
         return self._loop.create_task(self._corun(coro))
 
     def run_coro(self, coro):
-        self._loop.run_until_complete(self._corun(coro))
+        return self._loop.run_until_complete(self._corun(coro))
 
     async def send_corun(self, code, bufs=None):
         if self._corun_mutex.locked():
@@ -734,6 +738,29 @@ HBI {self.net_info}, landed code defined something:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self.disconnect()
         await self.wait_disconnected()
+
+    def co(self):
+        """
+        This meant to be used in `async with` as the async context manager to provide a `with` context where `co_*()`
+        methods can be called, without (async) defining a separate coro.
+
+        """
+        return _CoHBIC(self)
+
+
+class _CoHBIC:
+    __slots__ = ('hbic',)
+
+    def __init__(self, hbic: AbstractHBIC):
+        self.hbic = hbic
+
+    async def __aenter__(self):
+        await self.hbic._send_mutex.acquire(), self.hbic._corun_mutex.acquire()
+        return self.hbic
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self.hbic._corun_mutex.release()
+        self.hbic._send_mutex.release()
 
 
 def _loop_of_hbics(hbics):
