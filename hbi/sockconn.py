@@ -54,7 +54,8 @@ class SocketProtocol(asyncio.Protocol):
         self.hbic._data_received(chunk)
 
     def eof_received(self):
-        self.hbic._peer_eof()
+        if True is self.hbic._peer_eof():
+            return True
 
         if self.hbic.send_only:
             # if this hbic is send-only, don't let the transport close itself on peer eof

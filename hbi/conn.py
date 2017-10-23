@@ -250,7 +250,7 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
     def _peer_eof(self):
         peer_done_cb = self.context.get('hbi_peer_done', None)
         if peer_done_cb is not None:
-            peer_done_cb()
+            return peer_done_cb()
 
     def _connect(self):
         raise NotImplementedError('subclass should implement this as a coroutine')
