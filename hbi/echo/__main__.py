@@ -164,4 +164,4 @@ HBI connection closed by peer due to error:
             return NotImplemented
 
 else:
-    assert False, f'Unexpected HBI module run name: {__name__} ?!'
+    assert False, 'hbi.echo is only supposed to run as an HBI server or client module.'

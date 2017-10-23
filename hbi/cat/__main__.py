@@ -7,7 +7,7 @@ import logging
 
 logger = logging.getLogger(__package__)
 
-assert '__hbi_serving__' != __name__, 'running hbi.cat as HBI server ?! not supposedly right.'
+assert '__hbi_connecting__' == __name__, 'hbi.cat is only supposed to run as an HBI client module.'
 
 
 def __hbi_land__(code, wire_dir):
