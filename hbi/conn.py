@@ -131,6 +131,16 @@ class AbstractHBIC:
         self._loop.create_task(self._disconnect(exc, err_stack))
 
     def _handle_landing_error(self, exc):
+        try:
+            modu_err_handler = self.context.get('hbi_handle_err', None)
+            if modu_err_handler is not None:
+                if True is modu_err_handler(exc):
+                    # HBI module claimed successful handling of this error
+                    return
+        except Exception:
+            # error in error handling, will be reflected nextly
+            pass
+
         import traceback
         traceback.print_exc()
         logger.fatal(f'HBI {self.net_info} landing error occurred, forcing disconnection.')
@@ -138,6 +148,17 @@ class AbstractHBIC:
         self._loop.create_task(self._disconnect(exc, err_stack))
 
     def _handle_peer_error(self, message, stack=None):
+        try:
+            modu_err_handler = self.context.get('hbi_handle_peer_err', None)
+            if modu_err_handler is not None:
+                if True is modu_err_handler(message, stack):
+                    # HBI module claimed successful handling of this error
+                    return
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            logger.fatal(f'HBI {self.net_info} error occurred in handling peer error.')
+
         self.disconnect(f'Peer error: {message}', stack)
 
     @property
