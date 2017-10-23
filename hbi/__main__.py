@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import runpy
 import sys
 
 import hbi
+
+logger = logging.getLogger(__package__)
 
 assert __name__.endswith('__main__')
 
@@ -75,17 +78,19 @@ def main():
 
             ctx = runpy.run_module(modu_name, {
                 'hbi_host': host, 'hbi_port': port, 'hbi_argv': hbi_argv,
+                'hbi_loop': loop,
                 'hbi_server': hbis, 'hbi_peer': None,
             }, run_name='__hbi_accepting__')
             return ctx
 
-        print(f'Starting HBI server with module {modu_name} on {host or "*"}:{port}', file=sys.stderr)
+        logger.info(f'Starting HBI server with module {modu_name} on {host or "*"}:{port}')
         hbis = loop.run_until_complete(hbi.HBIC.create_server(ctx_factory, addr={
             'host': host, 'port': port,
         }, loop=loop))
         try:
             runpy.run_module(modu_name, {
                 'hbi_host': host, 'hbi_port': port, 'hbi_argv': hbi_argv,
+                'hbi_loop': loop,
                 'hbi_server': hbis, 'hbi_peer': None,
             }, run_name='__hbi_serving__')
             loop.run_until_complete(hbis.wait_closed())
@@ -97,10 +102,11 @@ def main():
         if host is None:
             return print_usage()
 
-        print(f'Connecting to HBI server {host}:{port} with module {modu_name}', file=sys.stderr)
+        logger.info(f'Connecting to HBI server {host}:{port} with module {modu_name}')
         try:
             ctx = runpy.run_module(modu_name, {
                 'hbi_host': host, 'hbi_port': port, 'hbi_argv': hbi_argv,
+                'hbi_loop': loop,
                 'hbi_server': None, 'hbi_peer': None,
             }, run_name='__hbi_connecting__')
 
@@ -109,9 +115,9 @@ def main():
                     'host': host, 'port': port,
                 }, loop=loop)
                 hbic.run_until_connected()
-                print(f'Connected {hbic}', file=sys.stderr)
+                logger.info(f'Connected {hbic}')
             except OSError as exc:
-                print(f'Connection failed: {exc}', file=sys.stderr)
+                logger.warning(f'Connection failed: {exc}')
                 sys.exit(1)
 
             hbi_boot = ctx.get('hbi_boot', None)
@@ -128,7 +134,7 @@ def main():
             hbic.run_until_disconnected()
 
         except KeyboardInterrupt:
-            pass
+            logger.warning('HBI terminating on Ctrl^C ...')
 
 
 main()
