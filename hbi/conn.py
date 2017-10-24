@@ -82,7 +82,8 @@ class AbstractHBIC:
 
     def __init__(
             self,
-            context, addr=None, net_opts=None,
+            context,
+            addr=None, net_opts=None,
             *,
             send_only=False,
             low_water_mark_send=6 * 1024 * 1024, high_water_mark_send=20 * 1024 * 1024,
@@ -171,8 +172,6 @@ class AbstractHBIC:
 
     @property
     def net_info(self):
-        if not self.addr:
-            return '<destroyed>'
         _wire = self._wire
         if not _wire:
             return '<unwired>'
@@ -399,7 +398,7 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
         raise NotImplementedError
 
     def _recv_water_pos(self):
-        raise NotImplementedError
+        return self._recv_buffer.nbytes
 
     def _pause_recv(self):
         raise NotImplementedError
@@ -629,9 +628,6 @@ HBI {self.net_info}, landed code defined something:
         self._recv_obj_waiters.append(fut)
         self._read_wire()
         return await fut
-
-    def _recv_water_pos(self):
-        return self._recv_buffer.nbytes
 
     def _data_received(self, chunk):
         # push to buffer
