@@ -79,11 +79,18 @@ class HBIC(AbstractHBIC):
     def create_server(cls, context_factory, addr, net_opts=None, *, loop=None, **kwargs):
         if loop is None:
             loop = asyncio.get_event_loop()
-        server = loop.create_server(
-            lambda: SocketProtocol(cls(context_factory(), loop=loop, **kwargs)),
-            host=addr.get('host', None), port=addr['port'], **(net_opts or {}), **kwargs
-        )
-        return server
+        if isinstance(addr, (str, bytes)):
+            # UNIX domain socket
+            return loop.create_unix_server(
+                lambda: SocketProtocol(cls(context_factory(), loop=loop, **kwargs)),
+                path=addr, **kwargs
+            )
+        else:
+            # TCP socket
+            return loop.create_server(
+                lambda: SocketProtocol(cls(context_factory(), loop=loop, **kwargs)),
+                host=addr.get('host', None), port=addr['port'], **(net_opts or {}), **kwargs
+            )
 
     def get_remote_host(self):
         peername = self._wire.transport.get_extra_info('peername')
@@ -134,11 +141,20 @@ class HBIC(AbstractHBIC):
 
         try:
 
-            transport, protocol = await self._loop.create_connection(
-                lambda: SocketProtocol(self),
-                self.addr['host'], self.addr['port'],
-                **self.net_opts or {}
-            )
+            if isinstance(self.addr, (str, bytes)):
+                # UNIX domain socket connection
+                transport, protocol = await self._loop.create_unix_connection(
+                    lambda: SocketProtocol(self),
+                    self.addr,
+                )
+            else:
+                # TCP socket
+                transport, protocol = await self._loop.create_connection(
+                    lambda: SocketProtocol(self),
+                    self.addr['host'], self.addr['port'],
+                    **self.net_opts or {}
+                )
+
             assert protocol is self._wire and transport is protocol.transport, 'conn not made atm ?!'
 
         except Exception as exc:
