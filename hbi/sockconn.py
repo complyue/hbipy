@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import socket
 
 from .conn import *
 from .proto import *
@@ -87,9 +88,12 @@ class HBIC(AbstractHBIC):
             )
         else:
             # TCP socket
+            addr_family = socket.AF_INET  # default to IPv4 only
+            if net_opts is not None:
+                addr_family = net_opts.get('family', addr_family)
             return loop.create_server(
                 lambda: SocketProtocol(cls(context_factory(), loop=loop, **kwargs)),
-                host=addr.get('host', None), port=addr['port'], **(net_opts or {}), **kwargs
+                host=addr.get('host', None), port=addr['port'], **(net_opts or {}), family=addr_family, **kwargs
             )
 
     def get_remote_host(self):
@@ -145,10 +149,13 @@ class HBIC(AbstractHBIC):
                 )
             else:
                 # TCP socket
+                addr_family = socket.AF_INET  # default to IPv4 only
+                if self.net_opts is not None:
+                    addr_family = self.net_opts.get('family', addr_family)
                 transport, protocol = await self._loop.create_connection(
                     lambda: SocketProtocol(self),
                     self.addr['host'], self.addr['port'],
-                    **self.net_opts or {}
+                    **self.net_opts or {}, family=addr_family,
                 )
 
             assert protocol is self._wire and transport is protocol.transport, 'conn not made atm ?!'

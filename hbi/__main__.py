@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import runpy
+import socket
 import sys
 
 import hbi
@@ -11,7 +12,7 @@ assert __name__.endswith('__main__')
 
 
 def print_usage():
-    print('HBI module runner, usage:\n  python -m hbi [-l] [-p port] [-h host] <module>', file=sys.stderr)
+    print('HBI module runner, usage:\n  python -m hbi [-l] [-6] [-p port] [-h host] <module>', file=sys.stderr)
 
 
 host = None
@@ -28,6 +29,7 @@ def main():
         return print_usage()
 
     run_server = False
+    net_opts = {}
 
     arg_i = 0
     while arg_i + 1 < len(sys.argv):
@@ -39,6 +41,10 @@ def main():
 
         if '-l' == sys.argv[arg_i]:
             run_server = True
+            continue
+
+        if '-6' == sys.argv[arg_i]:
+            net_opts['family'] = socket.AF_INET6
             continue
 
         if '-p' == sys.argv[arg_i]:
@@ -79,7 +85,7 @@ def main():
                 'hbi_server': hbis, 'hbi_peer': None,
             }, run_name='__hbi_accepting__'), addr={
                 'host': host, 'port': port,
-            }, loop=loop
+            }, net_opts=net_opts, loop=loop
         ))
         try:
             runpy.run_module(modu_name, {
@@ -115,7 +121,7 @@ def main():
             try:
                 hbic = hbi.HBIC(ctx, addr={
                     'host': host, 'port': port,
-                }, loop=loop)
+                }, net_opts=net_opts, loop=loop)
                 hbic.run_until_connected()
                 logger.info(f'HBI connected {hbic}')
             except OSError as exc:
