@@ -94,31 +94,27 @@ class HBIC(AbstractHBIC):
 
     def get_remote_host(self):
         peername = self._wire.transport.get_extra_info('peername')
-        if len(peername) != 2:
-            raise NotImplementedError('Socket transport other than tcp4 not supported yet.')
-        host, port = peername
-        return host
+        if len(peername) in (2, 4):
+            return peername[0]
+        raise NotImplementedError('Socket transport other than tcp4/tcp6 not supported yet.')
 
     def get_remote_port(self):
         peername = self._wire.transport.get_extra_info('peername')
-        if len(peername) != 2:
-            raise NotImplementedError('Socket transport other than tcp4 not supported yet.')
-        host, port = peername
-        return port
+        if len(peername) in (2, 4):
+            return peername[1]
+        raise NotImplementedError('Socket transport other than tcp4/tcp6 not supported yet.')
 
     def get_local_host(self):
         sockname = self._wire.transport.get_extra_info('sockname')
-        if len(sockname) != 2:
-            raise NotImplementedError('Socket transport other than tcp4 not supported yet.')
-        host, port = sockname
-        return host
+        if len(sockname) in (2, 4):
+            return sockname[0]
+        raise NotImplementedError('Socket transport other than tcp4/tcp6 not supported yet.')
 
     def get_local_port(self):
         sockname = self._wire.transport.get_extra_info('sockname')
-        if len(sockname) != 2:
-            raise NotImplementedError('Socket transport other than tcp4 not supported yet.')
-        host, port = sockname
-        return port
+        if len(sockname) in (2, 4):
+            return sockname[1]
+        raise NotImplementedError('Socket transport other than tcp4/tcp6 not supported yet.')
 
     @property
     def net_info(self):
