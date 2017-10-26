@@ -95,7 +95,14 @@ def main():
             }, run_name='__hbi_serving__')
             loop.run_until_complete(hbis.wait_closed())
         except KeyboardInterrupt:
+            logger.info(f'HBI shutting down in responding to Ctrl^C ...')
             return
+        else:
+            logger.info(f'HBI server closed, shutting down ...')
+        finally:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+            logger.info('HBI shutdown.')
 
     else:
 
@@ -103,6 +110,7 @@ def main():
             return print_usage()
 
         logger.info(f'Connecting to HBI server {host}:{port} with module {modu_name}')
+        hbic = None
         try:
             ctx = runpy.run_module(modu_name, {
                 'hbi_host': host, 'hbi_port': port, 'hbi_argv': hbi_argv,
@@ -115,26 +123,28 @@ def main():
                     'host': host, 'port': port,
                 }, loop=loop)
                 hbic.run_until_connected()
-                logger.info(f'Connected {hbic}')
+                logger.info(f'HBI connected {hbic}')
             except OSError as exc:
-                logger.warning(f'Connection failed: {exc}')
+                logger.warning(f'HBI connection failed: {exc}')
                 sys.exit(1)
 
             hbi_boot = ctx.get('hbi_boot', None)
             if hbi_boot is not None:
-
                 # calling client side boot function
                 hbi_boot()
-
             else:
-
                 # sending boot request to server
                 hbic.fire('hbi_boot()')
-
             hbic.run_until_disconnected()
-
         except KeyboardInterrupt:
-            logger.warning('HBI terminating on Ctrl^C ...')
+            if hbic is not None:
+                logger.warning('HBI terminating on Ctrl^C ...')
+                hbic.disconnect()
+        finally:
+            logger.info(f'HBI connection closed, shutting down ...')
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+            logger.info('HBI shutdown.')
 
 
 main()

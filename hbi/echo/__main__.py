@@ -5,6 +5,8 @@ HBI Echo server and client
 
 import logging
 
+import hbi
+
 logger = logging.getLogger(__package__)
 
 if '__hbi_serving__' == __name__:
@@ -39,14 +41,30 @@ print('This is echo server, merely serving `echo(*args, **kwargs)`, other code w
         hbi_peer.disconnect()
 
 
+    # net_info (so __str__) will be missing after disconnected, we need to save it if we want to report such info in
+    # hbi_disconnected() callback.
+    hbi_peer_name = 'HBI <never-connected>'
+
+
+    def hbi_connected():
+        global hbi_peer_name
+        hbi_peer_name = str(hbi_peer)
+
+        logger.info(f'HBI client {hbi_peer} connected.')
+
+
     def hbi_peer_done():
-        logger.info(f'Client {hbi_peer} quited.')
+        logger.info(f'HBI client {hbi_peer} quited.')
 
 
     def hbi_disconnecting(err_reason=None):
-        logger.warning(f'Client {hbi_peer} disconnecting.')
+        logger.warning(f'HBI client {hbi_peer} being disconnected ...')
         if err_reason is not None:
             logger.warning(f'  - Due to reason: {err_reason}')
+
+
+    def hbi_disconnected(err_reason=None):
+        logger.info(f'HBI client {hbi_peer_name} disconnected.')
 
 
     def echo(*args, **kwargs):
@@ -63,7 +81,7 @@ elif '__hbi_connecting__' == __name__:
 
     # hbi_peer is assigned after the module finished initialization, so it's okay to be used in functions defined here,
     # but during module initialization, it is None
-    hbi_peer = None
+    hbi_peer = None  # type: hbi.HBIC
 
     _land_code = False
 
@@ -111,6 +129,7 @@ elif '__hbi_connecting__' == __name__:
         def console_session():
             global hbi_disconnected
 
+            err_disconnect, err_stack = None, None
             try:
                 console.interact(fr'''
 HBI connected {hbi_peer.net_info}
@@ -125,12 +144,15 @@ HBI connected {hbi_peer.net_info}
 ''', r'''
 Bye.
 ''')
-                # actively disconnecting, clear the disconnection callback
-                hbi_disconnected = None
 
-                hbi_peer.disconnect()
-            except SystemExit:
-                pass
+            except (SystemExit, KeyboardInterrupt):
+                # upon interpreter exit, unset the disconnection callback to treat further disconnection as expected
+                hbi_disconnected = None
+            except Exception as exc:
+                import traceback
+                err_disconnect = exc
+                err_stack = traceback.format_exc()
+            hbi_peer.disconnect(err_disconnect, err_stack, try_send_peer_err=False)
 
         # main thread must run hbi loop, the repl has to run in a separate thread
         th = threading.Thread(target=console_session)

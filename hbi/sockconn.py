@@ -197,12 +197,20 @@ class HBIC(AbstractHBIC):
         self._wire.transport.resume_reading()
         self._wire._recv_paused = False
 
-    async def _disconnect(self, err_reason=None, err_stack=None):
+    def _cut_wire(self):
+        _wire = self._wire
+        if _wire is None:  # already closed
+            return
+        _wire.transport.close()
+        self._wire = None
+        # connection_lost will be called afterwards
+
+    async def _disconnect(self, err_reason=None, err_stack=None, try_send_peer_err=True):
         _wire = self._wire
         if _wire is None:  # already closed
             return
 
-        if err_reason is not None:
+        if err_reason is not None and try_send_peer_err:
             # try send peer error
             if not _wire.transport.is_closing():
                 try:
@@ -221,71 +229,67 @@ handlePeerErr({err_reason!r},{err_stack!r})
         # connection_lost will be called by asyncio loop after out-going packets flushed
 
     def _land_one(self):
-        try:
 
+        while True:
+            if self._recv_buffer is None:
+                raise RuntimeError('HBI wire disconnected')
+
+            if self._recv_buffer.nbytes <= 0:
+                return None  # no single full packet can be read from buffer
+            chunk = self._recv_buffer.popleft()
+            if not chunk:
+                continue
             while True:
-                if self._recv_buffer is None:
-                    raise RuntimeError('HBI wire disconnected')
-
-                if self._recv_buffer.nbytes <= 0:
-                    return None  # no single full packet can be read from buffer
-                chunk = self._recv_buffer.popleft()
-                if not chunk:
-                    continue
-                while True:
-                    if self._wire._bdy_buf is None:
-                        # packet header not fully received yet
-                        pe_pos = chunk.find(PACK_END)
-                        if pe_pos < 0:
-                            # still not enough for packet header
-                            if len(chunk) + self._wire._hdr_got >= PACK_HEADER_MAX:
-                                raise RuntimeError(
-                                    f'No packet header within first {len(chunk) + self._wire._hdr_got} bytes.'
-                                )
-                            hdr_got = self._wire._hdr_got + len(chunk)
-                            self._wire._hdr_buf[self._wire._hdr_got:hdr_got] = chunk.data()
-                            self._wire._hdr_got = hdr_got
-                            break  # proceed to next chunk in buffer
-                        hdr_got = self._wire._hdr_got + pe_pos
-                        self._wire._hdr_buf[self._wire._hdr_got:hdr_got] = chunk.data(0, pe_pos)
-                        self._wire._hdr_got = hdr_got
-                        chunk.consume(pe_pos + 1)
-                        header_pl = self._wire._hdr_buf[:self._wire._hdr_got]
-                        if not header_pl.startswith(PACK_BEGIN):
-                            rpt_len = len(header_pl)
-                            rpt_hdr = header_pl[:min(self._wire._hdr_got, 30)]
-                            rpt_net = self.net_info
+                if self._wire._bdy_buf is None:
+                    # packet header not fully received yet
+                    pe_pos = chunk.find(PACK_END)
+                    if pe_pos < 0:
+                        # still not enough for packet header
+                        if len(chunk) + self._wire._hdr_got >= PACK_HEADER_MAX:
                             raise RuntimeError(
-                                f'Invalid packet start in header: len: {rpt_len}, peer: {rpt_net}, head: [{rpt_hdr}]'
+                                f'No packet header within first {len(chunk) + self._wire._hdr_got} bytes.'
                             )
-                        ple_pos = header_pl.find(PACK_LEN_END, len(PACK_BEGIN))
-                        if ple_pos <= 0:
-                            raise RuntimeError(f'No packet length in header: [{header_pl}]')
-                        pack_len = int(header_pl[len(PACK_BEGIN):ple_pos])
-                        self._wire._wire_dir = header_pl[ple_pos + 1:].decode('utf-8')
-                        self._wire._hdr_got = 0
-                        self._wire._bdy_buf = bytearray(pack_len)
-                        self._wire._bdy_got = 0
-                    else:
-                        # packet body not fully received yet
-                        needs = len(self._wire._bdy_buf) - self._wire._bdy_got
-                        if len(chunk) < needs:
-                            # still not enough for packet body
-                            bdy_got = self._wire._bdy_got + len(chunk)
-                            self._wire._bdy_buf[self._wire._bdy_got:bdy_got] = chunk.data()
-                            self._wire._bdy_got = bdy_got
-                            break  # proceed to next chunk in buffer
-                        # body can be filled now
-                        self._wire._bdy_buf[self._wire._bdy_got:] = chunk.data(0, needs)
-                        if len(chunk) > needs:  # the other case is equal, means exactly consumed
-                            # put back extra data to buffer
-                            self._recv_buffer.appendleft(chunk.consume(needs))
-                        payload = self._wire._bdy_buf.decode('utf-8')
-                        self._wire._bdy_buf = None
-                        self._wire._bdy_got = 0
-                        wire_dir = self._wire._wire_dir
-                        self._wire._wire_dir = None
-                        return self.land(payload, wire_dir)
-
-        except Exception as exc:
-            self._handle_wire_error(exc)
+                        hdr_got = self._wire._hdr_got + len(chunk)
+                        self._wire._hdr_buf[self._wire._hdr_got:hdr_got] = chunk.data()
+                        self._wire._hdr_got = hdr_got
+                        break  # proceed to next chunk in buffer
+                    hdr_got = self._wire._hdr_got + pe_pos
+                    self._wire._hdr_buf[self._wire._hdr_got:hdr_got] = chunk.data(0, pe_pos)
+                    self._wire._hdr_got = hdr_got
+                    chunk.consume(pe_pos + 1)
+                    header_pl = self._wire._hdr_buf[:self._wire._hdr_got]
+                    if not header_pl.startswith(PACK_BEGIN):
+                        rpt_len = len(header_pl)
+                        rpt_hdr = header_pl[:min(self._wire._hdr_got, 30)]
+                        rpt_net = self.net_info
+                        raise RuntimeError(
+                            f'Invalid packet start in header: len: {rpt_len}, peer: {rpt_net}, head: [{rpt_hdr}]'
+                        )
+                    ple_pos = header_pl.find(PACK_LEN_END, len(PACK_BEGIN))
+                    if ple_pos <= 0:
+                        raise RuntimeError(f'No packet length in header: [{header_pl}]')
+                    pack_len = int(header_pl[len(PACK_BEGIN):ple_pos])
+                    self._wire._wire_dir = header_pl[ple_pos + 1:].decode('utf-8')
+                    self._wire._hdr_got = 0
+                    self._wire._bdy_buf = bytearray(pack_len)
+                    self._wire._bdy_got = 0
+                else:
+                    # packet body not fully received yet
+                    needs = len(self._wire._bdy_buf) - self._wire._bdy_got
+                    if len(chunk) < needs:
+                        # still not enough for packet body
+                        bdy_got = self._wire._bdy_got + len(chunk)
+                        self._wire._bdy_buf[self._wire._bdy_got:bdy_got] = chunk.data()
+                        self._wire._bdy_got = bdy_got
+                        break  # proceed to next chunk in buffer
+                    # body can be filled now
+                    self._wire._bdy_buf[self._wire._bdy_got:] = chunk.data(0, needs)
+                    if len(chunk) > needs:  # the other case is equal, means exactly consumed
+                        # put back extra data to buffer
+                        self._recv_buffer.appendleft(chunk.consume(needs))
+                    payload = self._wire._bdy_buf.decode('utf-8')
+                    self._wire._bdy_buf = None
+                    self._wire._bdy_got = 0
+                    wire_dir = self._wire._wire_dir
+                    self._wire._wire_dir = None
+                    return self.land(payload, wire_dir)

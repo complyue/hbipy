@@ -129,7 +129,8 @@ class AbstractHBIC:
         traceback.print_exc()
         logger.fatal(f'HBI {self.net_info} wire error occurred, forcing disconnection.')
         err_stack = traceback.format_exc()
-        self._loop.create_task(self._disconnect(exc, err_stack))
+
+        self._cut_wire(exc, err_stack)
 
     def _handle_landing_error(self, exc):
         try:
@@ -146,7 +147,7 @@ class AbstractHBIC:
         traceback.print_exc()
         logger.fatal(f'HBI {self.net_info} landing error occurred, forcing disconnection.')
         err_stack = traceback.format_exc()
-        self._loop.create_task(self._disconnect(exc, err_stack))
+        self.disconnect(exc, err_stack, True)
 
     def _handle_peer_error(self, message, stack=None):
         try:
@@ -160,7 +161,7 @@ class AbstractHBIC:
             traceback.print_exc()
             logger.fatal(f'HBI {self.net_info} error occurred in handling peer error.')
 
-        self.disconnect(f'Peer error: {message}', stack)
+        self.disconnect(f'Peer error: {message}', stack, False)
 
     @property
     def loop(self):
@@ -192,13 +193,13 @@ class AbstractHBIC:
             self._disc_fut = self._loop.create_future()
         self._loop.run_until_complete(self._disc_fut)
 
-    def disconnect(self, err_reason=None, err_stack=None):
+    def disconnect(self, err_reason=None, err_stack=None, try_send_peer_err=True):
         if err_reason is not None:
             if err_stack is None and isinstance(err_reason, BaseException):
                 import traceback
                 err_stack = traceback.format_exc()
 
-            logger.fatal(rf'''
+            logger.error(rf'''
 HBI disconnecting {self.net_info} due to error: {err_reason}
 {err_stack or ''}
 ''')
@@ -207,8 +208,14 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
         if disconn_cb is not None:
             disconn_cb(err_reason)
 
+        if self._loop.is_closed():
+            logger.warning('HBI disconnection bypassed since loop already closed.')
+            return
+
         # this can be called from any thread
-        self._loop.call_soon_threadsafe(self._loop.create_task, self._disconnect(err_reason, err_stack))
+        self._loop.call_soon_threadsafe(
+            self._loop.create_task, self._disconnect(err_reason, err_stack, try_send_peer_err)
+        )
 
     async def wait_disconnected(self):
         if not self.connected:
@@ -218,7 +225,10 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
             self._disc_fut = self._loop.create_future()
         await self._disc_fut
 
-    def _disconnect(self, err_reason=None, err_stack=None):
+    def _cut_wire(self, err_reason=None, err_stack=None):
+        raise NotImplementedError('subclass should implement this')
+
+    def _disconnect(self, err_reason=None, err_stack=None, try_send_peer_err=True):
         raise NotImplementedError('subclass should implement this as a coroutine')
 
     def _disconnected(self, exc=None):
@@ -420,8 +430,7 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
                     # custom lander can return `NotImplemented` to proceed standard landing
                     return
             except Exception as exc:
-                # treat uncaught error in custom landing as wire error
-                self._handle_wire_error(exc)
+                self._handle_landing_error(exc)
                 return
 
         # standard landing
@@ -458,7 +467,7 @@ HBI {self.net_info}, landed code defined something:
                 ctask = self.corun(coro)
                 return None, ctask, coro
             except Exception as exc:
-                self._handle_wire_error(exc)
+                self._handle_landing_error(exc)
                 return exc,
             finally:
                 if len(defs) > 0:
@@ -638,76 +647,72 @@ HBI {self.net_info}, landed code defined something:
         self._read_wire()
 
     def _read_wire(self):
-        try:
-            while True:
-                # feed as much buffered data as possible to data sink if present
-                while self._data_sink:
-                    # make sure data keep flowing in regarding lwm
+        while True:
+            # feed as much buffered data as possible to data sink if present
+            while self._data_sink:
+                # make sure data keep flowing in regarding lwm
+                if self._recv_water_pos() <= self.low_water_mark_recv:
+                    self._resume_recv()
+
+                if self._recv_buffer is None:
+                    # unexpected disconnect
+                    self._data_sink(None)
+                    return
+
+                chunk = self._recv_buffer.popleft()
+                if not chunk:
+                    # no more buffered data, wire is empty, return
+                    return
+                self._data_sink(chunk)
+
+            # in hosting mode, make the incoming data flew as fast as possible
+            if not self._corun_mutex.locked():
+                # try consume all buffered data first
+                while True:
+                    # meanwhile in hosting mode, make sure data keep flowing in regarding lwm
                     if self._recv_water_pos() <= self.low_water_mark_recv:
                         self._resume_recv()
-
-                    if self._recv_buffer is None:
-                        # unexpected disconnect
-                        self._data_sink(None)
-                        return
-
-                    chunk = self._recv_buffer.popleft()
-                    if not chunk:
-                        # no more buffered data, wire is empty, return
-                        return
-                    self._data_sink(chunk)
-
-                # in hosting mode, make the incoming data flew as fast as possible
-                if not self._corun_mutex.locked():
-                    # try consume all buffered data first
-                    while True:
-                        # meanwhile in hosting mode, make sure data keep flowing in regarding lwm
-                        if self._recv_water_pos() <= self.low_water_mark_recv:
-                            self._resume_recv()
-                        got = self._land_one()
-                        if not got:
-                            # no more packet to land
-                            break
-                        if len(got) > 2 and asyncio.iscoroutine(got[2]):
-                            # started a coro during landing, stop draining wire, let the coro recv on-demand,
-                            # and let subsequent incoming data to trigger hwm back pressure
-                            return
-                        elif got[0] is not None:
-                            # exception occurred in hosting mode, raise for the event loop to handle it
-                            raise got[0]
-                    return
-
-                # currently in corun mode
-                # first, try landing as many packets as awaited from buffered data
-                while len(self._recv_obj_waiters) > 0:
-                    obj_waiter = self._recv_obj_waiters.popleft()
                     got = self._land_one()
-                    if got is None:
-                        # no obj from buffer for now
-                        self._recv_obj_waiters.appendleft(obj_waiter)
+                    if not got:
+                        # no more packet to land
                         break
-                    if got[0] is None:
-                        obj_waiter.set_result(got[1])
-                    else:
-                        obj_waiter.set_exception(got[0])
-                    if not self._corun_mutex.locked():
-                        # switched to hosting during landing, just settled waiter should be the last one being awaited
-                        assert len(self._recv_obj_waiters) == 0
-                        break
+                    if len(got) > 2 and asyncio.iscoroutine(got[2]):
+                        # started a coro during landing, stop draining wire, let the coro recv on-demand,
+                        # and let subsequent incoming data to trigger hwm back pressure
+                        return
+                    elif got[0] is not None:
+                        # exception occurred in hosting mode, raise for the event loop to handle it
+                        raise got[0]
+                return
 
-                # and if still in corun mode, i.e. not finally switched to hosting mode by previous landings
-                if self._corun_mutex.locked():
-                    # ctrl incoming flow regarding hwm/lwm
-                    buffered_amount = self._recv_water_pos()
-                    if buffered_amount > self.high_water_mark_recv:
-                        self._pause_recv()
-                    elif buffered_amount <= self.low_water_mark_recv:
-                        self._resume_recv()
-                    # return now and will be called on subsequent recv demand
-                    return
-        except Exception as exc:
-            self._handle_wire_error(exc)
-            raise
+            # currently in corun mode
+            # first, try landing as many packets as awaited from buffered data
+            while len(self._recv_obj_waiters) > 0:
+                obj_waiter = self._recv_obj_waiters.popleft()
+                got = self._land_one()
+                if got is None:
+                    # no obj from buffer for now
+                    self._recv_obj_waiters.appendleft(obj_waiter)
+                    break
+                if got[0] is None:
+                    obj_waiter.set_result(got[1])
+                else:
+                    obj_waiter.set_exception(got[0])
+                if not self._corun_mutex.locked():
+                    # switched to hosting during landing, just settled waiter should be the last one being awaited
+                    assert len(self._recv_obj_waiters) == 0
+                    break
+
+            # and if still in corun mode, i.e. not finally switched to hosting mode by previous landings
+            if self._corun_mutex.locked():
+                # ctrl incoming flow regarding hwm/lwm
+                buffered_amount = self._recv_water_pos()
+                if buffered_amount > self.high_water_mark_recv:
+                    self._pause_recv()
+                elif buffered_amount <= self.low_water_mark_recv:
+                    self._resume_recv()
+                # return now and will be called on subsequent recv demand
+                return
 
     async def _corun(self, coro):
         # use send+corun mutex to prevent interference with other sendings or coros
@@ -743,7 +748,15 @@ HBI {self.net_info}, landed code defined something:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.disconnect()
+        if exc_type is None:
+            err_reason = None
+            err_stack = None
+        else:
+            import traceback
+            err_reason = exc_val if isinstance(exc_val, BaseException) else exc_type(exc_val)
+            err_stack = ''.join(traceback.format_exception(exc_type, exc_val, exc_tb))
+
+        self.disconnect(err_reason, err_stack, try_send_peer_err=True)
         self.run_until_disconnected(ensure_connected=False)
 
     # implement HBIC as reusable async context manager
@@ -753,7 +766,15 @@ HBI {self.net_info}, landed code defined something:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        self.disconnect()
+        if exc_type is None:
+            err_reason = None
+            err_stack = None
+        else:
+            import traceback
+            err_reason = exc_val if isinstance(exc_val, BaseException) else exc_type(exc_val)
+            err_stack = ''.join(traceback.format_exception(exc_type, exc_val, exc_tb))
+
+        self.disconnect(err_reason, err_stack, try_send_peer_err=True)
         await self.wait_disconnected()
 
     def co(self):
