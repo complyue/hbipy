@@ -71,22 +71,16 @@ def main():
             import platform
             host = platform.node()
 
-        hbis = None
-
-        def ctx_factory():
-            nonlocal hbis
-
-            ctx = runpy.run_module(modu_name, {
+        logger.info(f'Starting HBI server with module {modu_name} on {host or "*"}:{port}')
+        hbis = loop.run_until_complete(hbi.HBIC.create_server(
+            lambda: runpy.run_module(modu_name, {
                 'hbi_host': host, 'hbi_port': port, 'hbi_argv': hbi_argv,
                 'hbi_loop': loop,
                 'hbi_server': hbis, 'hbi_peer': None,
-            }, run_name='__hbi_accepting__')
-            return ctx
-
-        logger.info(f'Starting HBI server with module {modu_name} on {host or "*"}:{port}')
-        hbis = loop.run_until_complete(hbi.HBIC.create_server(ctx_factory, addr={
-            'host': host, 'port': port,
-        }, loop=loop))
+            }, run_name='__hbi_accepting__'), addr={
+                'host': host, 'port': port,
+            }, loop=loop
+        ))
         try:
             runpy.run_module(modu_name, {
                 'hbi_host': host, 'hbi_port': port, 'hbi_argv': hbi_argv,
