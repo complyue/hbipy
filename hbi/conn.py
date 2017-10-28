@@ -239,7 +239,7 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
         self._disconnecting = False
 
         if exc:
-            logger.warning(f'HBI connection unwired due to error: {exc}', exc_info=True)
+            logger.warning(f'HBI connection unwired due to error: {exc}')
 
         # abort pending tasks
         self._recv_buffer = None
