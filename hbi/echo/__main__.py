@@ -6,6 +6,7 @@ HBI Echo server and client
 import logging
 
 import hbi
+from hbi import me as hbie
 
 logger = logging.getLogger(__package__)
 
@@ -13,7 +14,7 @@ if '__hbi_serving__' == __name__:
     # modu run per HBI server initialization
 
     # hbi_host/hbi_port are available, the server has just started listening
-    logger.info(f'Echo server listening {hbi_host}:{hbi_port}')
+    logger.info(f'Echo server listening {hbie.host}:{hbie.port}')
 
 elif '__hbi_accepting__' == __name__:
     # modu run per client HBI connection accepted at server side
@@ -24,12 +25,8 @@ elif '__hbi_accepting__' == __name__:
 
 
     def hbi_boot():
-        global hbi_host, hbi_port  # supplied by HBI, at both server/client side
-        global hbi_argv  # supplied by HBI, from command line, whatever after --
-        global hbi_server  # supplied by HBI, always be None at client side
-
         # running as echo server
-        assert hbi_server is not None
+        assert hbie.server is not None
 
         # if `hbi_boot` is triggered at server side, that means client modu doesn't provide an `hbi_boot`,
         # but this `hbi.echo` modu surely does. so here we know that peer is an unknown client modu,
@@ -92,7 +89,7 @@ elif '__hbi_connecting__' == __name__:
         global hbi_server  # supplied by HBI, always be None at client side
 
         # running as echo client
-        assert hbi_server is None
+        assert hbie.server is None
 
         import sys
         import threading
