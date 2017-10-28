@@ -67,6 +67,7 @@ class AbstractHBIC:
         'context',
         'addr', 'net_opts',
         'send_only',
+        '_disconnecting',
 
         '_loop',
         '_wire', '_wire_ctx', '_data_sink', '_conn_fut', '_disc_fut',
@@ -97,6 +98,7 @@ class AbstractHBIC:
         self.addr = addr
         self.net_opts = net_opts
         self.send_only = send_only
+        self._disconnecting = False
         if loop is None:
             loop = asyncio.get_event_loop()
         self._loop = loop
@@ -194,6 +196,8 @@ class AbstractHBIC:
         self._loop.run_until_complete(self._disc_fut)
 
     def disconnect(self, err_reason=None, err_stack=None, try_send_peer_err=True):
+        self._disconnecting = True
+
         if err_reason is not None:
             if err_stack is None and isinstance(err_reason, BaseException):
                 import traceback
@@ -232,6 +236,8 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
         raise NotImplementedError('subclass should implement this as a coroutine')
 
     def _disconnected(self, exc=None):
+        self._disconnecting = False
+
         if exc:
             logger.warning(f'HBI connection unwired due to error: {exc}', exc_info=True)
 
@@ -265,6 +271,8 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
         raise NotImplementedError('subclass should implement this as a coroutine')
 
     def connect(self, addr=None, net_opts=None):
+        self._disconnecting = False
+
         if self.connected:
             if (addr is None or addr == self.addr) and (net_opts is None or net_opts == self.net_opts):
                 # already connected as expected
@@ -681,8 +689,10 @@ HBI {self.net_info}, landed code defined something:
                         # and let subsequent incoming data to trigger hwm back pressure
                         return
                     elif got[0] is not None:
-                        # exception occurred in hosting mode, raise for the event loop to handle it
-                        raise got[0]
+                        # exception occurred in hosting mode
+                        if not self._disconnecting:
+                            # if not disconnecting as handling result, raise for the event loop to handle it
+                            raise got[0]
                 return
 
             # currently in corun mode
