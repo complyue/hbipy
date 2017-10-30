@@ -10,6 +10,7 @@ __all__ = []
 
 host = None
 port = 3232
+addr = None
 
 modu_name = None
 

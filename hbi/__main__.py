@@ -15,7 +15,7 @@ assert '__main__' == __name__
 def print_usage():
     print(r'''
 HBI server/client module runner, usage:
-  python -m hbi [-l] [-6] [-p port] [-h host] <module>
+  python -m hbi [-l] [-6] [-p port] [-h host] [-s sock] <module>
 ''', file=sys.stderr)
 
 
@@ -52,6 +52,11 @@ def main():
             hbie.host = sys.argv[arg_i]
             continue
 
+        if '-s' == sys.argv[arg_i]:
+            arg_i += 1
+            hbie.addr = sys.argv[arg_i]
+            continue
+
         if sys.argv[arg_i].startswith('-'):
             return print_usage()
 
@@ -68,14 +73,16 @@ def main():
 
     if run_server:
 
-        if hbie.host is None:
-            import platform
-            hbie.host = platform.node()
+        if hbie.addr is None:
+            if hbie.host is None:
+                import platform
+                hbie.host = platform.node()
+            hbie.addr = {'host': hbie.host, 'port': hbie.port}
 
         logger.info(f'Starting HBI server with module {hbie.modu_name} on {hbie.host or "*"}:{hbie.port}')
         hbie.server = hbie.loop.run_until_complete(hbi.HBIC.create_server(
             lambda: runpy.run_module(hbie.modu_name, run_name='__hbi_accepting__'),
-            addr={'host': hbie.host, 'port': hbie.port}, net_opts=net_opts, loop=hbie.loop
+            addr=hbie.addr, net_opts=net_opts, loop=hbie.loop
         ))
         try:
             runpy.run_module(hbie.modu_name, run_name='__hbi_serving__')
@@ -92,16 +99,18 @@ def main():
 
     else:
 
-        if hbie.host is None:
-            return print_usage()
+        if hbie.addr is None:
+            if hbie.host is None:
+                return print_usage()
+            hbie.addr = {'host': hbie.host, 'port': hbie.port}
 
-        logger.info(f'Connecting to HBI server {hbie.host}:{hbie.port} with module {hbie.modu_name}')
+        logger.info(f'Connecting to HBI server {hbie.addr} with module {hbie.modu_name}')
         hbic = None
         try:
             try:
                 hbic = hbi.HBIC(
                     runpy.run_module(hbie.modu_name, run_name='__hbi_connecting__'),
-                    addr={'host': hbie.host, 'port': hbie.port}, net_opts=net_opts, loop=hbie.loop
+                    addr=hbie.addr, net_opts=net_opts, loop=hbie.loop
                 )
                 hbic.run_until_connected()
                 logger.info(f'HBI connected {hbic}')

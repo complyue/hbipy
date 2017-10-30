@@ -14,7 +14,7 @@ if '__hbi_serving__' == __name__:
     # modu run per HBI server initialization
 
     # hbi_host/hbi_port are available, the server has just started listening
-    logger.info(f'Echo server listening {hbie.host}:{hbie.port}')
+    logger.info(f'Echo server listening {hbie.addr}')
 
 elif '__hbi_accepting__' == __name__:
     # modu run per client HBI connection accepted at server side
