@@ -31,7 +31,7 @@ def main():
         arg_i += 1
 
         if '--' == sys.argv[arg_i]:
-            hbie.hbi_argv = sys.argv[arg_i + 1:]
+            hbie.argv = sys.argv[arg_i + 1:]
             break
 
         if '-l' == sys.argv[arg_i]:
