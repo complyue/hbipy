@@ -17,6 +17,35 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+def resolve_coro(coro, to_fut):
+    assert inspect.isawaitable(coro)
+
+    if to_fut.done():
+        # target already cancelled etc.
+        return
+
+    def coro_cb(coro_fut):
+
+        if to_fut.done():
+            # target already cancelled etc.
+            return
+
+        if coro_fut.canceled():
+            to_fut.cancel()
+        elif coro_fut.exception() is not None:
+            to_fut.set_exception(coro_fut.exception())
+        else:
+            fr = coro_fut.result()
+            if inspect.isawaitable(fr):
+                # continue the coro chain
+                resolve_coro(fr, to_fut)
+            else:
+                # just resolved
+                to_fut.set_result(coro_fut.result())
+
+    asyncio.ensure_future(coro).add_done_callback(coro_cb)
+
+
 class AbstractHBIC:
     """
     Abstract HBI Connection
@@ -625,6 +654,9 @@ HBI {self.net_info}, landed code defined something:
             if got is None:
                 # no obj available for now
                 break
+            if inspect.isawaitable(got[1]):
+                # await for coro etc.
+                got[1] = await got[1]
             if len(self._recv_obj_waiters) > 0:
                 # feed previous waiters first
                 obj_waiter = self._recv_obj_waiters.popleft()
@@ -693,6 +725,8 @@ HBI {self.net_info}, landed code defined something:
                         if not self._disconnecting:
                             # if not disconnecting as handling result, raise for the event loop to handle it
                             raise got[0]
+                    elif inspect.isawaitable(got[1]):
+                        asyncio.ensure_future(got[1])
                 return
 
             # currently in corun mode
@@ -705,7 +739,11 @@ HBI {self.net_info}, landed code defined something:
                     self._recv_obj_waiters.appendleft(obj_waiter)
                     break
                 if got[0] is None:
-                    obj_waiter.set_result(got[1])
+                    if inspect.isawaitable(got[1]):
+                        # chain the coros etc.
+                        resolve_coro(got[1], obj_waiter)
+                    else:
+                        obj_waiter.set_result(got[1])
                 else:
                     obj_waiter.set_exception(got[0])
                 if not self._corun_mutex.locked():
