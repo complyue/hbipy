@@ -239,7 +239,9 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
 
         disconn_cb = self.context.get('hbi_disconnecting', None)
         if disconn_cb is not None:
-            disconn_cb(err_reason)
+            maybe_coro = disconn_cb(err_reason)
+            if inspect.isawaitable(maybe_coro):
+                asyncio.ensure_future(maybe_coro)
 
         if self._loop.is_closed():
             logger.warning('HBI disconnection bypassed since loop already closed.')
@@ -289,7 +291,9 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
 
         disconn_cb = self.context.get('hbi_disconnected', None)
         if disconn_cb is not None:
-            disconn_cb(exc)
+            maybe_coro = disconn_cb(exc)
+            if inspect.isawaitable(maybe_coro):
+                asyncio.ensure_future(maybe_coro)
 
     def _peer_eof(self):
         peer_done_cb = self.context.get('hbi_peer_done', None)
@@ -331,7 +335,9 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
 
         conn_cb = self.context.get('hbi_connected', None)
         if conn_cb is not None:
-            conn_cb()
+            maybe_coro = conn_cb()
+            if inspect.isawaitable(maybe_coro):
+                asyncio.ensure_future(maybe_coro)
 
     async def wait_connected(self):
         if self.connected:
