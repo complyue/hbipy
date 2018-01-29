@@ -30,7 +30,7 @@ def resolve_coro(coro, to_fut):
             # target already cancelled etc.
             return
 
-        if coro_fut.canceled():
+        if coro_fut.cancelled():
             to_fut.cancel()
         elif coro_fut.exception() is not None:
             to_fut.set_exception(coro_fut.exception())
