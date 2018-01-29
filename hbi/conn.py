@@ -847,7 +847,7 @@ class _CoHBIC:
         self.hbic = hbic
 
     async def __aenter__(self):
-        await self.hbic._send_mutex.acquire(), self.hbic._corun_mutex.acquire()
+        await self.hbic._send_mutex.acquire(), await self.hbic._corun_mutex.acquire()
         return self.hbic
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
