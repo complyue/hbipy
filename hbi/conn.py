@@ -165,11 +165,19 @@ class AbstractHBIC:
 
     def _handle_landing_error(self, exc):
         try:
+
+            # if the HBI module declared an error handler, let it try handle the error first.
+            # the handler returns True to indicate that this error should be tolerated i.e. ignored.
             modu_err_handler = self.context.get('hbi_handle_err', None)
             if modu_err_handler is not None:
                 if True is modu_err_handler(exc):
                     # HBI module claimed successful handling of this error
                     return
+
+            # if in corun mode, leave the error to be thrown into the coro running
+            if self._corun_mutex.locked():
+                return
+
         except Exception:
             # error in error handling, will be reflected nextly
             pass
