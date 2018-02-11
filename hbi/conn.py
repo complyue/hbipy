@@ -629,7 +629,7 @@ HBI {self.net_info}, landed code defined something:
                     try:
                         buf = next(buf_puller)
                         pos = 0
-                        if buf.nbytes == 0:  # special case for some empty data
+                        if len(buf) == 0:  # special case for some empty data
                             buf = None
                     except StopIteration as ret:
                         # all buffers in hierarchy filled, finish receiving
