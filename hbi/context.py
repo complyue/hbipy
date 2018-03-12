@@ -10,8 +10,8 @@ __all__ = [
 ]
 
 
-def run_in_context(code, context, defs={}):
-    ast_ = ast.parse(code, '<code>', 'exec')
+def run_in_context(code, context, defs={}, src_name='<hbi-code>'):
+    ast_ = ast.parse(code, src_name, 'exec')
     last_expr = None
     last_def_name = None
     for field_ in ast.iter_fields(ast_):
@@ -24,9 +24,9 @@ def run_in_context(code, context, defs={}):
                 last_expr.body = field_[1].pop().value
             elif isinstance(le, (ast.FunctionDef, ast.ClassDef)):
                 last_def_name = le.name
-    exec(compile(ast_, '<hbi-code>', 'exec'), context, defs)
+    exec(compile(ast_, src_name, 'exec'), context, defs)
     if last_expr is not None:
-        return eval(compile(last_expr, '<hbi-code>', 'eval'), context, defs)
+        return eval(compile(last_expr, src_name, 'eval'), context, defs)
     elif last_def_name is not None:
         return defs[last_def_name]
     return None
