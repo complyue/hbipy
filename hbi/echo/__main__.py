@@ -105,18 +105,28 @@ elif '__hbi_connecting__' == __name__:
                     logger.warning('HBI disconnected, exiting...')
                     sys.exit(1)
 
-                if len(source) <= 0:
+                source = str(source).lstrip()
+                if len(source) < 1:
                     # empty source, nop
                     return
 
-                if '%land' == source.strip():
-                    _land_code = True
-                    logger.warning('%%% Now HBI code will be landed locally')
-                    return
-                if '%noland' == source.strip():
-                    _land_code = False
-                    logger.warning('%%% Now HBI code will NOT be landed locally')
-                    return
+                if '%' == source[0]:
+                    # magic cmd
+
+                    if '%land' == source.strip():
+                        _land_code = True
+                        logger.warning('%%% Now HBI code will be landed locally')
+                        return
+                    if '%noland' == source.strip():
+                        _land_code = False
+                        logger.warning('%%% Now HBI code will NOT be landed locally')
+                        return
+
+                    if source.startswith('%co '):
+                        hbi_peer.fire_corun(source[4:])
+                        return
+
+                    logger.error(f'No such magic: {source}')
 
                 hbi_peer.fire(source)
 
