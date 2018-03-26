@@ -278,7 +278,7 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
     def _disconnected(self, exc=None):
         self._disconnecting = False
 
-        if exc:
+        if exc is not None:
             logger.warning(f'HBI connection unwired due to error: {exc}')
 
         # abort pending tasks
@@ -289,6 +289,9 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
             waiters = self._recv_obj_waiters
             self._recv_obj_waiters = deque()
             for waiter in waiters:
+                if waiter.done():
+                    # may have been cancelled etc.
+                    continue
                 waiter.set_exception(exc)
 
         self._send_mutex.shutdown(exc)
