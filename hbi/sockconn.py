@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import socket
+from typing import *
 
 from .conn import *
 from .proto import *
@@ -231,7 +232,7 @@ handlePeerErr({err_reason!r},{err_stack!r})
         _wire.transport.close()
         # connection_lost will be called by asyncio loop after out-going packets flushed
 
-    def _land_one(self):
+    def _land_one(self) -> Optional[tuple]:
 
         while True:
             if self._recv_buffer is None:

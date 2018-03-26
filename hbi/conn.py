@@ -3,6 +3,7 @@ import contextlib
 import inspect
 import logging
 from collections import deque
+from typing import *
 
 from .buflist import *
 from .bytesbuf import *
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_coro(coro, to_fut):
-    assert inspect.isawaitable(coro)
+    assert asyncio.isfuture(coro)
 
     if to_fut.done():
         # target already cancelled etc.
@@ -36,12 +37,12 @@ def resolve_coro(coro, to_fut):
             to_fut.set_exception(coro_fut.exception())
         else:
             fr = coro_fut.result()
-            if inspect.isawaitable(fr):
+            if asyncio.isfuture(fr):
                 # continue the coro chain
                 resolve_coro(fr, to_fut)
             else:
                 # just resolved
-                to_fut.set_result(coro_fut.result())
+                to_fut.set_result(fr)
 
     asyncio.ensure_future(coro).add_done_callback(coro_cb)
 
@@ -467,22 +468,31 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
     def _resume_recv(self):
         raise NotImplementedError
 
-    def _land_one(self):
+    def _land_one(self) -> Optional[tuple]:
+        """
+        Interpretation of the return value from this function:
+            tuple of 3 - (exception, coro_task, coroutine)
+            tuple of 2 - (exception, value)
+            tuple of 1 - (affair,) result of HBI protocol affair, NO value goes to the application layer
+            None - no packet from wire landed
+        """
         raise NotImplementedError
 
-    def land(self, code, wire_dir):
+    def land(self, code, wire_dir) -> Optional[tuple]:
+        # Semantic of return value from this function is same as _land_one()
 
         # allow customization of code landing
         lander = self.context.get('__hbi_land__', None)
         if lander is not None:
             assert callable(lander), 'non-callable __hbi_land__ defined ?!'
             try:
-                if NotImplemented is not lander(code, wire_dir):
+                landed = lander(code, wire_dir)
+                if NotImplemented is not landed:
                     # custom lander can return `NotImplemented` to proceed standard landing
-                    return
+                    return landed,  # treat custom landing as protocol affair
             except Exception as exc:
                 self._handle_landing_error(exc)
-                return
+                return None,  # treat custom lander error as void protocol affair
 
         # standard landing
 
@@ -497,7 +507,7 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
                 # try handle the error by hbic class
                 self._handle_landing_error(exc)
                 # return the err so if a coro running, it has a chance to capture it
-                return exc,
+                return exc, None
 
             finally:
                 if len(defs) > 0:
@@ -511,15 +521,16 @@ HBI {self.net_info}, landed code defined something:
 ''')
 
         if 'corun' == wire_dir:
-            # land the coro and run it
+            # land the coro and start a task to run it
             defs = {}
+            co_task, coro = None, None
             try:
                 coro = run_in_context(code, self.context, defs)
-                ctask = self.corun(coro)
-                return None, ctask, coro
+                co_task = self.corun(coro)
+                return None, co_task, coro
             except Exception as exc:
                 self._handle_landing_error(exc)
-                return exc,
+                return exc, co_task, coro
             finally:
                 if len(defs) > 0:
                     logger.debug('sth defined by landed corun code.', {"defs": defs, "code": code})
@@ -533,9 +544,11 @@ HBI {self.net_info}, landed code defined something:
 
             defs = {}
             try:
-                run_in_context(code, self._wire_ctx, defs)
+                affair = run_in_context(code, self._wire_ctx, defs)
+                return affair,  # not giving affair to application layer
             except Exception as exc:
                 self._handle_wire_error(exc)
+                return None,  # treat wire error as void protocol affair, giving NO value to application layer
             finally:
                 if len(defs) > 0:
                     logger.warning('landed wire code defines sth.', {"defs": defs, "code": code})
@@ -664,27 +677,36 @@ HBI {self.net_info}, landed code defined something:
 
         while True:
             # continue poll one obj from buffer
-            got = self._land_one()
-            if got is None:
-                # no obj available for now
+            landed = self._land_one()
+            if landed is None:
+                # no more packet to land
                 break
-            if inspect.isawaitable(got[1]):
-                # await for coro etc.
-                got[1] = await got[1]
+            if len(landed) == 1:
+                # this landed packet is not interesting to application layer
+                continue
+            if len(landed) == 3:
+                # a new coro task started during co-run
+                co_task = landed[1]
+                assert not co_task.done(), 'co task done immediately as landed ?!'
+                # TODO: preemptive execution of such a coro task may be necessary if binary data follows,
+                # TODO: but currently this new coro task will be blocked by _corun_mutext,
+                # TODO: until current coro task or co ctx block finishes running.
+                continue
+            assert len(landed) == 2, f'land result is {type(landed).__name__} of {len(landed)} ?!'
             if len(self._recv_obj_waiters) > 0:
                 # feed previous waiters first
                 obj_waiter = self._recv_obj_waiters.popleft()
-                if got[0] is None:
-                    obj_waiter.set_result(got[1])
+                if landed[0] is None:
+                    obj_waiter.set_result(landed[1])
                 else:
-                    obj_waiter.set_exception(got[0])
+                    obj_waiter.set_exception(landed[0])
                 continue
 
-            # all waiters resolved, got this one to return
-            if got[0] is None:
-                return got[1]
+            # all waiters resolved, landed this one to return
+            if landed[0] is None:
+                return landed[1]
             else:
-                raise got[0]
+                raise landed[0]
 
         # no object from buffer available for now, queue as a waiter, await the future
         fut = self._loop.create_future()
@@ -726,40 +748,57 @@ HBI {self.net_info}, landed code defined something:
                     # meanwhile in hosting mode, make sure data keep flowing in regarding lwm
                     if self._recv_water_pos() <= self.low_water_mark_recv:
                         self._resume_recv()
-                    got = self._land_one()
-                    if not got:
+                    landed = self._land_one()
+                    if landed is None:
                         # no more packet to land
                         break
-                    if len(got) > 2 and asyncio.iscoroutine(got[2]):
-                        # started a coro during landing, stop draining wire, let the coro recv on-demand,
+                    if len(landed) == 1:
+                        # this landed packet is not interesting to application layer
+                        continue
+                    if len(landed) == 3:
+                        # a new coro task started during landing, stop draining wire, let the coro recv on-demand,
                         # and let subsequent incoming data to trigger hwm back pressure
                         return
-                    elif got[0] is not None:
+                    assert len(landed) == 2, f'land result is {type(landed).__name__} of {len(landed)} ?!'
+                    if landed[0] is not None:
                         # exception occurred in hosting mode
                         if not self._disconnecting:
                             # if not disconnecting as handling result, raise for the event loop to handle it
-                            raise got[0]
-                    elif inspect.isawaitable(got[1]):
-                        asyncio.ensure_future(got[1])
+                            raise landed[0]
+                    elif inspect.isawaitable(landed[1]):
+                        asyncio.ensure_future(landed[1])
                 return
 
             # currently in corun mode
             # first, try landing as many packets as awaited from buffered data
             while len(self._recv_obj_waiters) > 0:
                 obj_waiter = self._recv_obj_waiters.popleft()
-                got = self._land_one()
-                if got is None:
-                    # no obj from buffer for now
+                landed = self._land_one()
+                if landed is None:
+                    # no more packet to land
                     self._recv_obj_waiters.appendleft(obj_waiter)
                     break
-                if got[0] is None:
-                    if inspect.isawaitable(got[1]):
+                if len(landed) == 1:
+                    # this landed packet is not interesting to application layer
+                    self._recv_obj_waiters.appendleft(obj_waiter)
+                    continue
+                if len(landed) == 3:
+                    # a new coro task started during co-run
+                    co_task = landed[1]
+                    assert not co_task.done(), 'co task done immediately as landed ?!'
+                    # TODO: preemptive execution of such a coro task may be necessary if binary data follows,
+                    # TODO: but currently this new coro task will be blocked by _corun_mutext,
+                    # TODO: until current coro task or co ctx block finishes running.
+                    continue
+                assert len(landed) == 2, f'land result is {type(landed).__name__} of {len(landed)} ?!'
+                if landed[0] is None:
+                    if inspect.isawaitable(landed[1]):
                         # chain the coros etc.
-                        resolve_coro(got[1], obj_waiter)
+                        resolve_coro(asyncio.ensure_future(landed[1]), obj_waiter)
                     else:
-                        obj_waiter.set_result(got[1])
+                        obj_waiter.set_result(landed[1])
                 else:
-                    obj_waiter.set_exception(got[0])
+                    obj_waiter.set_exception(landed[0])
                 if not self._corun_mutex.locked():
                     # switched to hosting during landing, just settled waiter should be the last one being awaited
                     assert len(self._recv_obj_waiters) == 0
