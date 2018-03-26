@@ -770,17 +770,15 @@ HBI {self.net_info}, landed code defined something:
                 return
 
             # currently in corun mode
+            assert len(self._recv_obj_waiters) > 0, 'no obj waiter on wire during corun ?!'
             # first, try landing as many packets as awaited from buffered data
             while len(self._recv_obj_waiters) > 0:
-                obj_waiter = self._recv_obj_waiters.popleft()
                 landed = self._land_one()
                 if landed is None:
                     # no more packet to land
-                    self._recv_obj_waiters.appendleft(obj_waiter)
                     break
                 if len(landed) == 1:
                     # this landed packet is not interesting to application layer
-                    self._recv_obj_waiters.appendleft(obj_waiter)
                     continue
                 if len(landed) == 3:
                     # a new coro task started during co-run
@@ -791,6 +789,7 @@ HBI {self.net_info}, landed code defined something:
                     # TODO: until current coro task or co ctx block finishes running.
                     continue
                 assert len(landed) == 2, f'land result is {type(landed).__name__} of {len(landed)} ?!'
+                obj_waiter = self._recv_obj_waiters.popleft()
                 if landed[0] is None:
                     if inspect.isawaitable(landed[1]):
                         # chain the coros etc.
