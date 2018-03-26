@@ -699,10 +699,18 @@ HBI {self.net_info}, landed code defined something:
             if len(self._recv_obj_waiters) > 0:
                 # feed previous waiters first
                 obj_waiter = self._recv_obj_waiters.popleft()
-                if landed[0] is None:
-                    obj_waiter.set_result(landed[1])
+                if obj_waiter.done():
+                    if obj_waiter.cancelled():
+                        logger.warning(f'A landed value discarded as not given to a cancelled co_recv_obj() call.')
+                    elif obj_waiter.exception() is not None:
+                        logger.error(f'A co_recv_obj() call failed before a value landed for it ?!')
+                    else:
+                        logger.error(f'A co_recv_obj() call got result before a value landed for it ?!')
                 else:
-                    obj_waiter.set_exception(landed[0])
+                    if landed[0] is None:
+                        obj_waiter.set_result(landed[1])
+                    else:
+                        obj_waiter.set_exception(landed[0])
                 continue
 
             # all waiters resolved, landed this one to return
@@ -793,14 +801,22 @@ HBI {self.net_info}, landed code defined something:
                     continue
                 assert len(landed) == 2, f'land result is {type(landed).__name__} of {len(landed)} ?!'
                 obj_waiter = self._recv_obj_waiters.popleft()
-                if landed[0] is None:
-                    if inspect.isawaitable(landed[1]):
-                        # chain the coros etc.
-                        resolve_coro(asyncio.ensure_future(landed[1]), obj_waiter)
+                if obj_waiter.done():
+                    if obj_waiter.cancelled():
+                        logger.warning(f'A landed value discarded as not given to a cancelled co_recv_obj() call.')
+                    elif obj_waiter.exception() is not None:
+                        logger.error(f'A co_recv_obj() call failed before a value landed for it ?!')
                     else:
-                        obj_waiter.set_result(landed[1])
+                        logger.error(f'A co_recv_obj() call got result before a value landed for it ?!')
                 else:
-                    obj_waiter.set_exception(landed[0])
+                    if landed[0] is None:
+                        if inspect.isawaitable(landed[1]):
+                            # chain the coros etc.
+                            resolve_coro(asyncio.ensure_future(landed[1]), obj_waiter)
+                        else:
+                            obj_waiter.set_result(landed[1])
+                    else:
+                        obj_waiter.set_exception(landed[0])
                 if not self._corun_mutex.locked():
                     # switched to burst mode during landing, just settled waiter should be the last one being awaited
                     assert len(self._recv_obj_waiters) == 0
