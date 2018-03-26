@@ -663,7 +663,7 @@ HBI {self.net_info}, landed code defined something:
 
     async def recv_data(self, bufs):
         if self._corun_mutex.locked():
-            raise RuntimeError('HBI recv_data should only be used in hosting mode')
+            raise RuntimeError('HBI recv_data should only be used in burst mode')
         await self._recv_data(bufs)
 
     async def co_recv_data(self, bufs):
@@ -719,7 +719,7 @@ HBI {self.net_info}, landed code defined something:
         if chunk:
             self._recv_buffer.append(BytesBuffer(chunk))
 
-        # read wire regarding corun/hosting mode and flow ctrl
+        # read wire regarding corun/burst mode and flow ctrl
         self._read_wire()
 
     def _read_wire(self):
@@ -741,11 +741,11 @@ HBI {self.net_info}, landed code defined something:
                     return
                 self._data_sink(chunk)
 
-            # in hosting mode, make the incoming data flew as fast as possible
+            # in burst mode, make the incoming data flew as fast as possible
             if not self._corun_mutex.locked():
                 # try consume all buffered data first
                 while True:
-                    # meanwhile in hosting mode, make sure data keep flowing in regarding lwm
+                    # meanwhile in burst mode, make sure data keep flowing in regarding lwm
                     if self._recv_water_pos() <= self.low_water_mark_recv:
                         self._resume_recv()
                     landed = self._land_one()
@@ -761,7 +761,7 @@ HBI {self.net_info}, landed code defined something:
                         return
                     assert len(landed) == 2, f'land result is {type(landed).__name__} of {len(landed)} ?!'
                     if landed[0] is not None:
-                        # exception occurred in hosting mode
+                        # exception occurred in burst mode
                         if not self._disconnecting:
                             # if not disconnecting as handling result, raise for the event loop to handle it
                             raise landed[0]
@@ -800,11 +800,11 @@ HBI {self.net_info}, landed code defined something:
                 else:
                     obj_waiter.set_exception(landed[0])
                 if not self._corun_mutex.locked():
-                    # switched to hosting during landing, just settled waiter should be the last one being awaited
+                    # switched to burst mode during landing, just settled waiter should be the last one being awaited
                     assert len(self._recv_obj_waiters) == 0
                     break
 
-            # and if still in corun mode, i.e. not finally switched to hosting mode by previous landings
+            # and if still in corun mode, i.e. not finally switched to burst mode by previous landings
             if self._corun_mutex.locked():
                 # ctrl incoming flow regarding hwm/lwm
                 buffered_amount = self._recv_water_pos()
