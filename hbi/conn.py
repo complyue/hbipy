@@ -781,7 +781,10 @@ HBI {self.net_info}, landed code defined something:
                 return
 
             # currently in corun mode
-            assert len(self._recv_obj_waiters) > 0, 'no obj waiter on wire during corun ?!'
+            if len(self._recv_obj_waiters) <= 0:
+                logger.warning(f'Pkt received but NO data waiter on wire during corun ?!')
+                # postpone wire reading, with flow ctrl imposed below
+
             # first, try landing as many packets as awaited from buffered data
             while len(self._recv_obj_waiters) > 0:
                 landed = self._land_one()
