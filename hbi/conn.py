@@ -504,7 +504,12 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
             defs = {}
             try:
 
-                return None, run_in_context(code, self.context, defs)
+                maybe_coro = run_in_context(code, self.context, defs)
+                if inspect.iscoroutine(maybe_coro):
+                    co_task = self._loop.create_task(maybe_coro)
+                    return None, co_task, maybe_coro
+
+                return None, maybe_coro
 
             except Exception as exc:
                 # try handle the error by hbic class
