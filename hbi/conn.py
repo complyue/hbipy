@@ -175,8 +175,8 @@ class AbstractHBIC:
                     # HBI module claimed successful handling of this error
                     return
 
-            # if in corun mode, leave the error to be thrown into the coro running
-            if self._corun_mutex.locked():
+            # if in corun mode with at least one waiter, leave the error to be thrown into the coro running
+            if self._corun_mutex.locked() and len(self._recv_obj_waiters) > 0:
                 return
 
         except Exception:
