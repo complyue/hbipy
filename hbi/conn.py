@@ -512,6 +512,14 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
                 return None, maybe_coro
 
             except Exception as exc:
+                logger.debug(rf'''
+HBI {self.net_info}, error landing code:
+--CODE--
+{code!s}
+--DEFS--
+{defs!r}
+--====--
+''')
                 # try handle the error by hbic class
                 self._handle_landing_error(exc)
                 # return the err so if a coro running, it has a chance to capture it
