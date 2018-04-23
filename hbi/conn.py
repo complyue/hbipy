@@ -494,6 +494,12 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
                     # custom lander can return `NotImplemented` to proceed standard landing
                     return None, landed
             except Exception as exc:
+                logger.debug(rf'''
+HBI {self.net_info}, error custom landing code:
+--CODE--
+{code!s}
+--====--
+''', exc_info=True)
                 self._handle_landing_error(exc)
                 return exc,
 
@@ -518,7 +524,7 @@ HBI {self.net_info}, error landing code:
 --DEFS--
 {defs!r}
 --====--
-''')
+''', exc_info=True)
                 # try handle the error by hbic class
                 self._handle_landing_error(exc)
                 # return the err so if a coro running, it has a chance to capture it
@@ -544,6 +550,14 @@ HBI {self.net_info}, landed code defined something:
                 co_task = self.corun(coro)
                 return None, co_task, coro
             except Exception as exc:
+                logger.debug(rf'''
+HBI {self.net_info}, error landing corun code:
+--CODE--
+{code!s}
+--DEFS--
+{defs!r}
+--====--
+''', exc_info=True)
                 self._handle_landing_error(exc)
                 return exc, co_task, coro
             finally:
@@ -562,6 +576,14 @@ HBI {self.net_info}, landed code defined something:
                 affair = run_in_context(code, self._wire_ctx, defs)
                 return affair,  # not giving affair to application layer
             except Exception as exc:
+                logger.debug(rf'''
+HBI {self.net_info}, error landing wire code:
+--CODE--
+{code!s}
+--DEFS--
+{defs!r}
+--====--
+''', exc_info=True)
                 self._handle_wire_error(exc)
                 return None,  # treat wire error as void protocol affair, giving NO value to application layer
             finally:
