@@ -492,13 +492,12 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
                 landed = lander(code, wire_dir)
                 if NotImplemented is not landed:
                     # custom lander can return `NotImplemented` to proceed standard landing
-                    return landed,  # treat custom landing as protocol affair
+                    return None, landed
             except Exception as exc:
                 self._handle_landing_error(exc)
-                return None,  # treat custom lander error as void protocol affair
+                return exc,
 
         # standard landing
-
         if wire_dir is None or len(wire_dir) <= 0:
             # got plain packet, land it
             defs = {}
