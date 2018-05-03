@@ -299,7 +299,8 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
         fut = self._disc_fut
         if fut is not None:
             self._disc_fut = None
-            fut.set_result(self)
+            if not fut.done():
+                fut.set_result(self)
 
         disconn_cb = self.context.get('hbi_disconnected', None)
         if disconn_cb is not None:
@@ -343,7 +344,8 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
         fut = self._conn_fut
         if fut is not None:
             self._conn_fut = None
-            fut.set_result(self)
+            if not fut.done():
+                fut.set_result(self)
 
         conn_cb = self.context.get('hbi_connected', None)
         if conn_cb is not None:
@@ -643,7 +645,8 @@ HBI {self.net_info}, error landing wire code:
             nonlocal buf
 
             if chunk is None:
-                fut.set_exception(RuntimeError('HBI disconnected'))
+                if not fut.done():
+                    fut.set_exception(RuntimeError('HBI disconnected'))
                 self._end_offload(None, data_sink)
 
             try:
@@ -685,14 +688,16 @@ HBI {self.net_info}, error landing wire code:
                         # all buffers in hierarchy filled, finish receiving
                         self._end_offload(chunk, data_sink)
                         # resolve the future
-                        fut.set_result(bufs)
+                        if not fut.done():
+                            fut.set_result(bufs)
                         # and done
                         return
                     except Exception as exc:
                         raise RuntimeError('HBI buffer source raised exception') from exc
             except Exception as exc:
                 self._handle_wire_error(exc)
-                fut.set_exception(exc)
+                if not fut.done():
+                    fut.set_exception(exc)
 
         self._begin_offload(data_sink)
 
