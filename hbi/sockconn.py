@@ -201,7 +201,7 @@ class HBIC(AbstractHBIC):
         self._wire.transport.resume_reading()
         self._wire._recv_paused = False
 
-    def _cut_wire(self):
+    def _cut_wire(self, err_reason=None, err_stack=None):
         _wire = self._wire
         if _wire is None:  # already closed
             return
