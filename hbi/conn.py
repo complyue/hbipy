@@ -821,7 +821,7 @@ HBI {self.net_info}, error landing wire code:
 
             # currently in corun mode
             if len(self._recv_obj_waiters) <= 0:
-                logger.warning(f'Pkt received but NO data waiter on wire during corun ?!')
+                logger.debug('Pkt received but NO data waiter on wire during corun ?!')
                 # postpone wire reading, with flow ctrl imposed below
 
             # first, try landing as many packets as awaited from buffered data
