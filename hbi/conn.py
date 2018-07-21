@@ -196,6 +196,18 @@ class AbstractHBIC:
                 if True is modu_err_handler(message, stack):
                     # HBI module claimed successful handling of this error
                     return
+
+            if len(self._recv_obj_waiters) > 0:
+                # propagate peer error to co-receivers
+                exc = RuntimeError(f'HBI peer error: {message!s}')
+                waiters = self._recv_obj_waiters
+                self._recv_obj_waiters = deque()
+                for waiter in waiters:
+                    if waiter.done():
+                        # may have been cancelled etc.
+                        continue
+                    waiter.set_exception(exc)
+
         except Exception:
             import traceback
             traceback.print_exc()
@@ -234,6 +246,9 @@ class AbstractHBIC:
         self._loop.run_until_complete(self._disc_fut)
 
     def disconnect(self, err_reason=None, err_stack=None, try_send_peer_err=True):
+        if self._disconnecting:
+            logger.debug(f'Repeating disconnection request ignored. err_reason: {err_reason!s}')
+            return
         self._disconnecting = True
 
         if err_reason is not None:
@@ -486,6 +501,56 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
     def land(self, code, wire_dir) -> Optional[tuple]:
         # Semantic of return value from this function is same as _land_one()
 
+        # process non-customizable wire directives first
+        if 'corun' == wire_dir:
+            # land the coro and start a task to run it
+            defs = {}
+            co_task, coro = None, None
+            try:
+                coro = run_in_context(code, self.context, defs)
+                co_task = self.corun(coro)
+                return None, co_task, coro
+            except Exception as exc:
+                logger.debug(rf'''
+HBI {self.net_info}, error landing corun code:
+--CODE--
+{code!s}
+--DEFS--
+{defs!r}
+--====--
+''', exc_info=True)
+                self._handle_landing_error(exc)
+                return exc, co_task, coro
+            finally:
+                if len(defs) > 0:
+                    logger.debug('sth defined by landed corun code.', {"defs": defs, "code": code})
+        elif 'wire' == wire_dir:
+            # got wire affair packet, land it
+            if self._wire_ctx is None:  # populate this wire's ctx jit
+                self._wire_ctx = {attr: getattr(self, attr) for attr in dir(self)}
+
+                # universal functions for HBI peers in different languages
+                self._wire_ctx['handlePeerErr'] = self._handle_peer_error
+
+            defs = {}
+            try:
+                affair = run_in_context(code, self._wire_ctx, defs)
+                return affair,  # not giving affair to application layer
+            except Exception as exc:
+                logger.debug(rf'''
+HBI {self.net_info}, error landing wire code:
+--CODE--
+{code!s}
+--DEFS--
+{defs!r}
+--====--
+''', exc_info=True)
+                self._handle_wire_error(exc)
+                return None,  # treat wire error as void protocol affair, giving NO value to application layer
+            finally:
+                if len(defs) > 0:
+                    logger.warning('landed wire code defines sth.', {"defs": defs, "code": code})
+
         # allow customization of code landing
         lander = self.context.get('__hbi_land__', None)
         if lander is not None:
@@ -542,55 +607,6 @@ HBI {self.net_info}, landed code defined something:
 {defs!r}
 --====--
 ''')
-
-        if 'corun' == wire_dir:
-            # land the coro and start a task to run it
-            defs = {}
-            co_task, coro = None, None
-            try:
-                coro = run_in_context(code, self.context, defs)
-                co_task = self.corun(coro)
-                return None, co_task, coro
-            except Exception as exc:
-                logger.debug(rf'''
-HBI {self.net_info}, error landing corun code:
---CODE--
-{code!s}
---DEFS--
-{defs!r}
---====--
-''', exc_info=True)
-                self._handle_landing_error(exc)
-                return exc, co_task, coro
-            finally:
-                if len(defs) > 0:
-                    logger.debug('sth defined by landed corun code.', {"defs": defs, "code": code})
-        elif 'wire' == wire_dir:
-            # got wire affair packet, land it
-            if self._wire_ctx is None:  # populate this wire's ctx jit
-                self._wire_ctx = {attr: getattr(self, attr) for attr in dir(self)}
-
-                # universal functions for HBI peers in different languages
-                self._wire_ctx['handlePeerErr'] = self._handle_peer_error
-
-            defs = {}
-            try:
-                affair = run_in_context(code, self._wire_ctx, defs)
-                return affair,  # not giving affair to application layer
-            except Exception as exc:
-                logger.debug(rf'''
-HBI {self.net_info}, error landing wire code:
---CODE--
-{code!s}
---DEFS--
-{defs!r}
---====--
-''', exc_info=True)
-                self._handle_wire_error(exc)
-                return None,  # treat wire error as void protocol affair, giving NO value to application layer
-            finally:
-                if len(defs) > 0:
-                    logger.warning('landed wire code defines sth.', {"defs": defs, "code": code})
         else:
             raise RuntimeError(f'HBI unknown wire directive [{wire_dir}]')
 
@@ -878,7 +894,11 @@ HBI {self.net_info}, error landing wire code:
     async def _corun(self, coro):
         # use send+corun mutex to prevent interference with other sendings or coros
         with await self._send_mutex, await self._corun_mutex:
-            return await coro
+            try:
+                return await coro
+            except Exception as exc:
+                # if coro unexpects this error, treat it as landing error
+                self._handle_landing_error(exc)
 
     def corun(self, coro):
         """

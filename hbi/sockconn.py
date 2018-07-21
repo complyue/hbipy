@@ -215,21 +215,28 @@ class HBIC(AbstractHBIC):
             return
 
         if err_reason is not None and try_send_peer_err:
-            # try send peer error
             if not _wire.transport.is_closing():
+                # try send peer error
                 try:
                     await self._send_text(rf'''
 handlePeerErr({err_reason!r},{err_stack!r})
 ''', b'wire')
                 except Exception:
                     logger.warning('HBI failed sending peer error', exc_info=True)
+                # close outgoing channel
+                try:
+                    _wire.transport.write_eof()
+                except Exception:
+                    logger.warning('HBI failed flushing peer error', exc_info=True)
 
         # clear this only after peer error has been sent out
         self._wire = None
 
-        # close outgoing channel
-        _wire.transport.write_eof()
-        _wire.transport.close()
+        try:
+            _wire.transport.close()
+        except OSError:
+            # may already be invalid
+            pass
         # connection_lost will be called by asyncio loop after out-going packets flushed
 
     def _land_one(self) -> Optional[tuple]:
