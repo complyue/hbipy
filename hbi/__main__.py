@@ -1,3 +1,8 @@
+"""
+Adhoc mode runner for HBI module
+
+"""
+
 import asyncio
 import logging
 import runpy
@@ -5,17 +10,19 @@ import socket
 import sys
 
 import hbi
-from . import me as hbie
+from . import me
 
-logger = logging.getLogger(__package__)
+__all__ = ()
 
 assert '__main__' == __name__
+
+logger = logging.getLogger(__package__)
 
 
 def print_usage():
     print(r'''
-HBI server/client module runner, usage:
-  python -m hbi [-l] [-6] [-p port] [-h host] [-s sock] <module>
+Run HBI module in adhoc server or client mode, usage:
+  python -m hbi <module> [-l] [-6] [-p port] [-h host] [-s sock]
 ''', file=sys.stderr)
 
 
@@ -24,14 +31,13 @@ def main():
         return print_usage()
 
     run_server = False
-    net_opts = {}
 
     arg_i = 0
     while arg_i + 1 < len(sys.argv):
         arg_i += 1
 
         if '--' == sys.argv[arg_i]:
-            hbie.argv = sys.argv[arg_i + 1:]
+            me.argv = sys.argv[arg_i + 1:]
             break
 
         if '-l' == sys.argv[arg_i]:
@@ -39,78 +45,78 @@ def main():
             continue
 
         if '-6' == sys.argv[arg_i]:
-            net_opts['family'] = socket.AF_INET6
+            me.net_opts['family'] = socket.AF_INET6
             continue
 
         if '-p' == sys.argv[arg_i]:
             arg_i += 1
-            hbie.port = int(sys.argv[arg_i])
+            me.port = int(sys.argv[arg_i])
             continue
 
         if '-h' == sys.argv[arg_i]:
             arg_i += 1
-            hbie.host = sys.argv[arg_i]
+            me.host = sys.argv[arg_i]
             continue
 
         if '-s' == sys.argv[arg_i]:
             arg_i += 1
-            hbie.addr = sys.argv[arg_i]
+            me.addr = sys.argv[arg_i]
             continue
 
         if sys.argv[arg_i].startswith('-'):
             return print_usage()
 
-        if hbie.modu_name is None:
-            hbie.modu_name = sys.argv[arg_i]
+        if me.modu_name is None:
+            me.modu_name = sys.argv[arg_i]
             continue
 
         return print_usage()
 
-    if hbie.modu_name is None:
+    if me.modu_name is None:
         return print_usage()
 
-    hbie.loop = asyncio.get_event_loop()
+    me.loop = asyncio.get_event_loop()
 
     if run_server:
 
-        if hbie.addr is None:
-            if hbie.host is None:
+        if me.addr is None:
+            if me.host is None:
                 import platform
-                hbie.host = platform.node()
-            hbie.addr = {'host': hbie.host, 'port': hbie.port}
+                me.host = platform.node()
+            me.addr = {'host': me.host, 'port': me.port}
 
-        logger.info(f'Starting HBI server with module {hbie.modu_name} on {hbie.host or "*"}:{hbie.port}')
-        hbie.server = hbie.loop.run_until_complete(hbi.HBIC.create_server(
-            lambda: runpy.run_module(hbie.modu_name, run_name='__hbi_accepting__'),
-            addr=hbie.addr, net_opts=net_opts, loop=hbie.loop
+        logger.info(f'Starting HBI server with module {me.modu_name} on {me.addr}')
+        me.server = me.loop.run_until_complete(hbi.HBIC.create_server(
+            lambda: runpy.run_module(me.modu_name, run_name='__hbi_accepting__'),
+            addr=me.addr, net_opts=me.net_opts, loop=me.loop
         ))
         try:
-            runpy.run_module(hbie.modu_name, run_name='__hbi_serving__')
-            hbie.loop.run_until_complete(hbie.server.wait_closed())
+            runpy.run_module(me.modu_name, run_name='__hbi_serving__')
+            me.loop.run_until_complete(me.server.wait_closed())
         except KeyboardInterrupt:
             logger.info(f'HBI shutting down in responding to Ctrl^C ...')
             return
         else:
             logger.info(f'HBI server closed, shutting down ...')
         finally:
-            hbie.loop.run_until_complete(hbie.loop.shutdown_asyncgens())
-            hbie.loop.close()
+            me.loop.run_until_complete(me.loop.shutdown_asyncgens())
+            me.loop.close()
             logger.info('HBI shutdown.')
 
     else:
 
-        if hbie.addr is None:
-            if hbie.host is None:
+        if me.addr is None:
+            if me.host is None:
                 return print_usage()
-            hbie.addr = {'host': hbie.host, 'port': hbie.port}
+            me.addr = {'host': me.host, 'port': me.port}
 
-        logger.info(f'Connecting to HBI server {hbie.addr} with module {hbie.modu_name}')
+        logger.info(f'Connecting to HBI server {me.addr} with module {me.modu_name}')
         hbic = None
         try:
             try:
                 hbic = hbi.HBIC(
-                    runpy.run_module(hbie.modu_name, run_name='__hbi_connecting__'),
-                    addr=hbie.addr, net_opts=net_opts, loop=hbie.loop
+                    runpy.run_module(me.modu_name, run_name='__hbi_connecting__'),
+                    addr=me.addr, net_opts=me.net_opts, loop=me.loop
                 )
                 hbic.run_until_connected()
                 logger.info(f'HBI connected {hbic}')
@@ -132,8 +138,8 @@ def main():
                 hbic.disconnect()
         finally:
             logger.info(f'HBI connection closed, shutting down ...')
-            hbie.loop.run_until_complete(hbie.loop.shutdown_asyncgens())
-            hbie.loop.close()
+            me.loop.run_until_complete(me.loop.shutdown_asyncgens())
+            me.loop.close()
             logger.info('HBI shutdown.')
 
 
