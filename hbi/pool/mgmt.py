@@ -1,5 +1,6 @@
 import asyncio
 import os
+import os.path
 import runpy
 import signal
 import subprocess
@@ -75,16 +76,14 @@ class MicroMaster:
 
         self.team_addr = f'{tempfile.mkdtemp()}/micropool.sock'
         self._pool_hbis_task = loop.create_task(HBIC.create_server(
-            lambda: runpy.run_module(f'{__package__}._pmgr.__main__', init_globals={
-                'master': self,
-            }, run_name='__hbi_pool_master__'),
+            lambda: runpy.run_module(f'{__package__}._pmgr.__main__', run_name='__hbi_pool_master__'),
             addr=self.team_addr, loop=loop,
         ))
         loop.create_task(self._pool_cleanup())
 
         self._all_workers.clear()
         for _ in range(min(self.hot_back, self.pool_size)):
-            self._all_workers.add(MicroWorker())
+            self._all_workers.add(MicroWorker(self))
 
         logger.info(f'HBI Micro Service Pool team addr: {self.team_addr}')
 
@@ -143,6 +142,15 @@ class MicroMaster:
 
     async def assign_proc(self, consumer: MicroConsumer):
         # TODO implement load based provisional assignment
+
+        # maintain enough hot backing proc workers
+        idle_quota = self.hot_back - (self._idle_workers.qsize() + len(self._pending_workers))
+        if idle_quota > 0:
+            logger.debug(f'Starting {idle_quota!r} hot backing proc workers given current workers:'
+                         f' ({self._idle_workers.qsize()}/{len(self._all_workers)}/{self.pool_size})')
+        while idle_quota > 0 and len(self._all_workers) < self.pool_size:
+            self._all_workers.add(MicroWorker(self))
+            idle_quota -= 1
 
         # currently proc is assigned to sole consumer until it releases or disconnects
         if consumer.assigned_worker is None:
@@ -225,14 +233,19 @@ class MicroWorker:
 
         self.start_worker_process()
 
-    def __str__(self):
+    def __repr__(self):
         if self.po is None:
             return 'MicroWorker[unborn]'
         return f'MicroWorker[{self.po.pid}]'
 
     def start_worker_process(self):
+        # pydev debuggers have difficulties figuring out subprocesses to be started with `python -m <modu>` cmdl,
+        # have to use the helper script
+        import hbi
+        hbi_dir = os.path.dirname(hbi.__file__)
+        hbipy_dir = os.path.dirname(hbi_dir)
         self.po = subprocess.Popen(
-            [sys.executable, '-m', f'{__package__}._pmgr.worker', self.master.team_addr],
+            [sys.executable, f'{hbipy_dir}/run-module.py', f'{__package__}._pmgr.worker', self.master.team_addr],
             # a proc subprocess should live together with its master process, and killed altogether
             start_new_session=False,
         )
@@ -313,7 +326,7 @@ class MicroWorker:
 
     async def prepare_session(self, session: str = None):
         async with self.hbi_peer.co()as hbi_peer:
-            await hbi_peer.co_send_code(rf'''
+            await hbi_peer.send_corun(rf'''
 prepare_session({session!r})
 ''')
             confirmed_session = await hbi_peer.co_recv_obj()

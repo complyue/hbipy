@@ -41,6 +41,14 @@ class MicroConnection:
         self.net_opts = net_opts
         self.proc_conn_cache = {}
 
+        self.pool_hbic.connect()
+
+    def disconnect(self, err_reason: str = None, err_stack: str = None):
+        # todo handle errors here
+        for k, c in self.proc_conn_cache.items():
+            c.disconnect(err_reason, err_stack)
+        self.pool_hbic.disconnect(err_reason, err_stack)
+
     @property
     def pool_addr(self):
         return self.pool_hbic.addr
@@ -51,10 +59,21 @@ class MicroConnection:
             return None
         return self.proc_hbic.addr
 
-    async def __aenter__(self):
+    async def connect_proc(self, session: str = None):
+        if session == self.session:
+            # session not changed, can reuse connection to proc if still alive
+            if self.proc_hbic is not None and self.proc_hbic.connected:
+                # connection to proc still alive, no need to assign new proc
+                return self.proc_hbic
+        else:
+            # new session or changed session, mandatory to ask pool master for proc assignment,
+            # though not unusual for it to assign same proc the consumer currently connected to
+            self.session = session
+
+        # request pool master to assign a proc
         await self.pool_hbic.wait_connected()
         async with self.pool_hbic.co() as pool_hbic:
-            await pool_hbic.co_send_code(rf'''
+            await pool_hbic.send_corun(rf'''
 assign_proc({self.session!r})
 ''')
             proc_addr = await pool_hbic.co_recv_obj()
@@ -63,13 +82,31 @@ assign_proc({self.session!r})
             if proc_hbic is None:
                 proc_hbic = HBIC(self.context, proc_addr, self.net_opts)
                 self.proc_conn_cache[proc_cache_key] = proc_hbic
-            await proc_hbic.wait_connected()
+            else:
+                proc_hbic.connect()
+
+                if self.proc_hbic is not None and proc_hbic is not self.proc_hbic:
+                    # assignment changed to a new proc
+                    # TODO disconnect some cached proc connections according to some rules TBD
+                    pass
+
+            try:
+                await proc_hbic.wait_connected()
+            except Exception:
+                # TODO complain to pool master about unavailability of the proc, retry according to some rules TBD
+                raise
+
             self.proc_hbic = proc_hbic
+
+        return self.proc_hbic
+
+    async def __aenter__(self):
+        proc_hbic = await self.connect_proc()
         co = proc_hbic.co()
         hbic = await co.__aenter__()
         self.co = co
 
-        logger.debug(f'Pool proc {hbic!r} bound for session {self.session!s} ...')
+        logger.debug(f'Pool proc {hbic!r} bound for session {self.session!s}')
         return hbic
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -78,10 +115,15 @@ assign_proc({self.session!r})
             return
         self.co = None
 
-        if exc_type is not None:
-            if issubclass(exc_type, (asyncio.CancelledError, futures.CancelledError)):
-                err_reason = f'Pool master cancellation.'
-            else:
-                err_reason = f'Pool master error: {exc_type!s} {exc_val!s}'
-            co.hbic.disconnect(err_reason)
-            return
+        try:
+            await co.__aexit__(exc_type, exc_val, exc_tb)
+        except Exception:
+            logger.fatal(f'HBI co context error.', exc_info=True)
+            co.hbic.disconnect('HBI co context error.')
+        else:
+            if exc_type is not None:
+                if issubclass(exc_type, (asyncio.CancelledError, futures.CancelledError)):
+                    err_reason = f'HBI pool consumer cancellation.'
+                else:
+                    err_reason = f'HBI pool consumer error: {exc_type!s} {exc_val!s}'
+                co.hbic.disconnect(err_reason)

@@ -43,6 +43,12 @@ class SocketProtocol(asyncio.Protocol):
         self.transport = transport
 
         self.hbic._wire = self
+        wire_fut = self.hbic._wire_fut
+        if wire_fut is not None:
+            if not wire_fut.done():
+                wire_fut.set_result(self)
+            # clear wire future
+            self.hbic._wire_fut = None
 
         self.hbic._connected()
 
@@ -67,6 +73,7 @@ class SocketProtocol(asyncio.Protocol):
         self.hbic._disconnected(exc)
 
         self.hbic._wire = None
+        self.hbic._wire_fut = None
 
 
 class HBIC(AbstractHBIC):
@@ -137,8 +144,15 @@ class HBIC(AbstractHBIC):
     async def _connect(self):
         assert self.addr, 'no addr has been specified ?!'
 
-        if self._wire:
+        if self._wire is not None:
             raise asyncio.InvalidStateError('requesting new connection with transport already wired')
+
+        wire_fut = self._wire_fut
+        if wire_fut is None or wire_fut.done():
+            self._wire_fut = self._loop.create_future()
+        else:
+            # already attempting wiring, do not repeat
+            return
 
         try:
 

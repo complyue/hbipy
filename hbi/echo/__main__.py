@@ -3,18 +3,30 @@ HBI Echo server and client
 
 """
 
+import asyncio
 import logging
+import sys
 
 import hbi
-from hbi import me as hbie
+from hbi import me
+from hbi.pool import MicroConnection
+from hbi.pool import pe
+from .shell import *
 
 logger = logging.getLogger(__package__)
 
 if '__hbi_serving__' == __name__:
     # modu run per HBI server initialization
 
-    # hbi_host/hbi_port are available, the server has just started listening
-    logger.info(f'Echo server listening {hbie.addr}')
+    if pe.master is not None:
+        # run in service pool mode, this is in master process, me.host/me.port is consumer serving endpoint
+        logger.info(f'Echo pool master listening {me.addr}')
+    elif pe.team_addr is not None:
+        # run in pool proc mode, me.host/me.port is direct serving endpoint
+        logger.info(f'Echo server listening {me.addr}')
+    else:
+        # run in standalone server mode, me.host/me.port is direct serving endpoint
+        logger.info(f'Echo pool proc listening {me.addr}')
 
 elif '__hbi_accepting__' == __name__:
     # modu run per client HBI connection accepted at server side
@@ -26,7 +38,7 @@ elif '__hbi_accepting__' == __name__:
 
     def hbi_boot():
         # running as echo server
-        assert hbie.server is not None
+        assert me.server is not None
 
         # if `hbi_boot` is triggered at server side, that means client modu doesn't provide an `hbi_boot`,
         # but this `hbi.echo` modu surely does. so here we know that peer is an unknown client modu,
@@ -73,106 +85,18 @@ print(*({args!r}), **({kwargs!r}))
 print('---END--REMOTE-MSG--', flush=True)
 ''')
 
-elif '__hbi_connecting__' == __name__:
-    # modu run per client HBI connection
+elif __name__ in ('__hbi_connecting__', '__main__'):
 
-    # hbi_peer is assigned after the module finished initialization, so it's okay to be used in functions defined here,
-    # but during module initialization, it is None
-    hbi_peer = None  # type: hbi.HBIC
-
-    _land_code = False
-
-
-    def hbi_boot():
-        global hbi_host, hbi_port  # supplied by HBI, at both server/client side
-        global hbi_argv  # supplied by HBI, from command line, whatever after --
-        global hbi_server  # supplied by HBI, always be None at client side
-
-        # running as echo client
-        assert hbie.server is None
-
-        import sys
-        import threading
-        from code import InteractiveConsole
-
-        # run client repl like a console, but fire the interactive source to be landed remotely
-        class HBIConsole(InteractiveConsole):
-
-            def runsource(self, source, filename="<input>", symbol="single"):
-                global _land_code  # to control local code landing
-
-                if not hbi_peer.connected:
-                    logger.warning('HBI disconnected, exiting...')
-                    sys.exit(1)
-
-                source = str(source).lstrip()
-                if len(source) < 1:
-                    # empty source, nop
-                    return
-
-                if '%' == source[0]:
-                    # magic cmd
-
-                    if '%land' == source.strip():
-                        _land_code = True
-                        logger.warning('%%% Now HBI code will be landed locally')
-                        return
-                    if '%noland' == source.strip():
-                        _land_code = False
-                        logger.warning('%%% Now HBI code will NOT be landed locally')
-                        return
-
-                    if source.startswith('%co '):
-                        hbi_peer.fire_corun(source[4:])
-                        return
-
-                    logger.error(f'No such magic: {source}')
-
-                hbi_peer.fire(source)
-
-        console = HBIConsole()
-        sys.ps1 = 'hbi> '
-
-        def console_session():
-            global hbi_disconnected
-
-            err_disconnect, err_stack = None, None
-            try:
-                console.interact(fr'''
-HBI connected {hbi_peer.net_info}
-
-                            -==[ WARNING ]==- 
-!!! ANY code you submit here will be executed by the server, take care !!!
-                            -==[ WARNING ]==- 
-
-&&& Now HBI code will{'' if _land_code else ' NOT'} be landed, 
-&&& you can control local landing with %land and %noland magic commands.
-
-''', r'''
-Bye.
-''')
-
-            except (SystemExit, KeyboardInterrupt):
-                # upon interpreter exit, unset the disconnection callback to treat further disconnection as expected
-                hbi_disconnected = None
-            except Exception as exc:
-                import traceback
-                err_disconnect = exc
-                err_stack = traceback.format_exc()
-            hbi_peer.disconnect(err_disconnect, err_stack, try_send_peer_err=False)
-
-        # main thread must run hbi loop, the repl has to run in a separate thread
-        th = threading.Thread(target=console_session)
-        th.start()
+    console: HBIConsole = None
 
 
     def hbi_disconnected(err_reason=None):
-        # defined here to handle unexpected disconnection
-        import sys
-        if err_reason is None:
-            logger.error('HBI connection closed by peer.')
-        else:
-            logger.error(rf'''
+        if console is not None and console.running:
+            # unexpected disconnection
+            if err_reason is None:
+                logger.info('HBI connection closed by peer.')
+            else:
+                logger.error(rf'''
 HBI connection closed by peer due to error:
 {err_reason}
 ''')
@@ -188,9 +112,98 @@ HBI connection closed by peer due to error:
 ====================
 ''', flush=True)
 
-        if _land_code:
+        if console is not None and console.land_code:
             # perform normal landing, i.e. to execute it locally
             return NotImplemented
 
+
+    if '__hbi_connecting__' == __name__:
+        # run in standalone client mode
+        # hbi_peer is assigned after the module finished initialization,
+        # but during module initialization, it is None
+        hbi_peer = None  # type: hbi.HBIC
+
+
+        def hbi_boot():
+            global console
+            # running as echo client
+            assert me.server is None
+            console = HBIConsole(hbi_peer)
+            console.run()
+
+    elif '__main__' == __name__:
+        # run in utility module mode, acting as micro service consumer
+
+        def print_usage():
+            print(r'''
+HBI service pool interactive tact utility, usage:
+  python -m hbi.echo [-6] [-p port] [-h host] [-s sock]
+''', file=sys.stderr)
+
+
+        async def main():
+            global console
+
+            if len(sys.argv) <= 1:
+                return print_usage()
+
+            arg_i = 0
+            while arg_i + 1 < len(sys.argv):
+                arg_i += 1
+
+                if '--' == sys.argv[arg_i]:
+                    me.argv = sys.argv[arg_i + 1:]
+                    break
+
+                if '-6' == sys.argv[arg_i]:
+                    me.net_opts['family'] = socket.AF_INET6
+                    continue
+
+                if '-p' == sys.argv[arg_i]:
+                    arg_i += 1
+                    me.port = int(sys.argv[arg_i])
+                    continue
+
+                if '-h' == sys.argv[arg_i]:
+                    arg_i += 1
+                    me.host = sys.argv[arg_i]
+                    continue
+
+                if '-s' == sys.argv[arg_i]:
+                    arg_i += 1
+                    me.addr = sys.argv[arg_i]
+                    continue
+
+                if sys.argv[arg_i].startswith('-'):
+                    return print_usage()
+
+                return print_usage()
+
+            if me.addr is None:
+                if me.host is None:
+                    return print_usage()
+                me.addr = {'host': me.host, 'port': me.port}
+
+            logger.info(f'Connecting to HBI pool {me.addr}')
+            service_pool = MicroConnection(globals(), me.addr, net_opts=me.net_opts)
+
+            # bind to a pool proc
+            hbic = await service_pool.connect_proc(session='xxx')
+            logger.info(f'Assigned HBI proc {hbic}')
+
+            console = HBIConsole(hbic)
+            console.run()
+
+            # passively wait disconnected by service
+            await hbic.wait_disconnected()
+
+            logger.info(f'Done with HBI pool {me.addr}')
+            # disconnect from pool
+            service_pool.disconnect()
+
+
+        asyncio.get_event_loop().run_until_complete(main())
+
+
 else:
-    assert False, 'hbi.echo is only supposed to run as an HBI server or client module.'
+    assert False, f'Unexpected run name: {__name__!s}'

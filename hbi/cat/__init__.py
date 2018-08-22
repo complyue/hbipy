@@ -1,6 +1,6 @@
 import logging
 
-from .. import hbi_root_logger
+from ..log import hbi_root_logger
 
 # enable debug messages for hbi
 if hbi_root_logger.getEffectiveLevel() > logging.DEBUG:

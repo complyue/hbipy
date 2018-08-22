@@ -11,7 +11,15 @@ __share__ = (
     'worker_rss_quota',
 )
 
+# proc worker subprocess life ctrl parameters
+# retire if resident set size exceeds this quota
 worker_rss_quota = 2 * 1024 ** 3  # 2 GB by default
+# todo add job throughput related quota
+
+# team addr if this is a pool proc subprocess
+team_addr = None
+# micro master object if this is the pool master process
+master = None
 
 # session id str of current proc
 session = None

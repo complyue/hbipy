@@ -7,16 +7,13 @@ import hbi
 from hbi import me
 from hbi.log import get_logger
 from hbi.pool import pe
-from ..mgmt import MicroMaster, MicroWorker
+from ..mgmt import MicroWorker
 
 logger = get_logger(__package__)
 
 assert '__hbi_pool_master__' == __name__, 'this only meant to run as the peer of an M3 project worker subprocess!'
 
 hbi_peer: hbi.HBIC = None  # will be updated by HBI after module initialization
-
-if hbi_peer is not None:  # will never exec, for IDE hinting only
-    master: MicroMaster = MicroMaster(0, 0)
 
 worker: MicroWorker = None
 
@@ -27,7 +24,7 @@ worker_serving = None
 async def worker_online(pid: int):
     global worker, worker_serving
     assert worker is None, 'worker subprocess repeating online ?!'
-    worker = master.register_proc(pid, hbi_peer)
+    worker = pe.master.register_proc(pid, hbi_peer)
     assert worker is not None, 'spawned worker not tracked ?!'
 
     worker_serving = worker.report_serving
@@ -38,6 +35,14 @@ serv_hbi_module(
     { {k:vars(pe)[k] for k in pe.__share__} !r},
 )
 ''')
+
+
+def ping():
+    hbi_peer.fire('pong()')
+
+
+def pong():
+    pass
 
 
 def hbi_disconnected(exc=None):

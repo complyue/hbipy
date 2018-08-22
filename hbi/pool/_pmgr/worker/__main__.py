@@ -23,7 +23,7 @@ this_process = psutil.Process(os.getpid())
 # modu run from python command line as HBI pool proc worker subprocess
 assert '__main__' == __name__
 assert len(sys.argv) == 2, 'HBI pool proc worker subprocess should be started with <team_addr> !'
-team_addr, = sys.argv[1:]
+pe.team_addr, = sys.argv[1:]
 
 
 def hbi_connected():
@@ -41,25 +41,25 @@ async def serv_hbi_module(me_dict: dict, pe_dict: dict):
     vars(me).update(me_dict)
     vars(pe).update(pe_dict)
 
-    modu_dict = runpy.run_module(me.modu_name, init_globals={
-        'master': None,
-    }, run_name='__hbi_serving__')
+    logger.info(f'Starting HBI proc with module [{me.modu_name}] on {me.host}')
+    me.server = await hbi.HBIC.create_server(
+        lambda: runpy.run_module(me.modu_name, init_globals=me.init_globals, run_name='__hbi_accepting__'),
+        addr={
+            'host': me.host, 'port': None,  # let os assign arbitrary port
+        }, net_opts=me.net_opts, loop=me.loop
+    )
+    me.port = me.server.sockets[0].getsockname()[1]
+    me.addr = {'host': me.host, 'port': me.port}
+    logger.info(f'HBI proc serving [{me.modu_name}] on {me.addr}')
+
+    modu_dict = runpy.run_module(me.modu_name, run_name='__hbi_serving__')
     hbi_proc_session_changing_to = modu_dict.get('hbi_proc_session_changing_to', None)
     if hbi_proc_session_changing_to is not None:
         assert callable(hbi_proc_session_changing_to)
         # todo validate that it accepts a single str arg as new session id
 
-    logger.info(f'Starting HBI proc with module {me.modu_name} on {me.host}')
-    me.server = await hbi.HBIC.create_server(
-        lambda: runpy.run_module(me.modu_name, init_globals=me.init_globals, run_name='__hbi_accepting__'),
-        addr={
-            'host': me.host, 'port': None,
-        }, net_opts=me.net_opts, loop=me.loop
-    )
-    proc_port = me.server.sockets[0].getsockname()[1]
-    logger.info(f'HBI proc serving {me.modu_name} on {me.host}:{proc_port}')
     await hbi_peer.send_corun(rf'''
-worker_serving({proc_port!r})
+worker_serving({me.port!r})
 ''')
 
 
@@ -91,6 +91,14 @@ async def retire(force: bool = False):
     sys.exit(5)
 
 
+def ping():
+    hbi_peer.fire('pong()')
+
+
+def pong():
+    pass
+
+
 def hbi_disconnected(exc=None):
     if pe.retiring:
         if exc is not None:
@@ -111,7 +119,7 @@ me.loop = asyncio.get_event_loop()
 try:
 
     hbi_peer = hbi.HBIC(
-        globals(), team_addr, loop=me.loop
+        globals(), pe.team_addr, loop=me.loop
     )
     hbi_peer.run_until_connected()
 

@@ -8,7 +8,7 @@ __all__ = ()
 
 # shared variables amongst pool master and procs, must be transferable via dict repr
 __share__ = (
-    'host', 'port', 'addr', 'net_opts', 'modu_name', 'init_globals', 'argv',
+    'host', 'addr', 'net_opts', 'modu_name', 'init_globals', 'argv',
 )
 
 host = None
@@ -22,4 +22,6 @@ init_globals = None
 argv = []
 
 loop = None
+
+# server socket in standalone server or pool proc mode
 server = None

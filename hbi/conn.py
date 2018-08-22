@@ -100,7 +100,7 @@ class AbstractHBIC:
         '_disconnecting',
 
         '_loop',
-        '_wire', '_wire_ctx', '_data_sink', '_conn_fut', '_disc_fut',
+        '_wire_fut', '_wire', '_wire_ctx', '_data_sink', '_conn_fut', '_disc_fut',
 
         'low_water_mark_send', 'high_water_mark_send', '_send_mutex',
 
@@ -133,6 +133,7 @@ class AbstractHBIC:
             loop = asyncio.get_event_loop()
         self._loop = loop
 
+        self._wire_fut = None
         self._wire = None
         self._wire_ctx = None
         self._data_sink = None
@@ -257,9 +258,12 @@ class AbstractHBIC:
                 err_stack = traceback.format_exc()
 
             logger.error(rf'''
-HBI disconnecting {self.net_info} due to error: {err_reason}
-{err_stack or ''}
-''')
+HBI disconnecting {self.net_info} due to error:
+ ---
+{err_reason}
+ ---
+{err_stack or '<no-stack>'}
+ ===''')
 
         disconn_cb = self.context.get('hbi_disconnecting', None)
         if disconn_cb is not None:
@@ -508,6 +512,8 @@ HBI disconnecting {self.net_info} due to error: {err_reason}
             co_task, coro = None, None
             try:
                 coro = run_in_context(code, self.context, defs)
+                if not inspect.iscoroutine(coro):
+                    raise RuntimeError(f'Not a coroutine for corun: type={type(coro)!r}, {coro!r}')
                 co_task = self.corun(coro)
                 return None, co_task, coro
             except Exception as exc:
@@ -905,6 +911,7 @@ HBI {self.net_info}, landed code defined something:
         Run a coroutine within which `co_*()` methods of this hbic can be called.
 
         """
+        assert coro is not None, '?!'
         return self._loop.create_task(self._corun(coro))
 
     def run_coro(self, coro):
