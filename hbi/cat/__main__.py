@@ -8,7 +8,7 @@ import logging
 import sys
 
 from hbi import me
-from hbi.pool import MicroConnection
+from hbi.pool import MicroPool
 
 logger = logging.getLogger(__package__)
 
@@ -89,10 +89,10 @@ HBI service pool simple tact utility, usage:
             me.addr = {'host': me.host, 'port': me.port}
 
         logger.info(f'Connecting to HBI pool {me.addr}')
-        service_pool = MicroConnection(globals(), me.addr, net_opts=me.net_opts)
+        service_pool = MicroPool(globals(), me.addr, net_opts=me.net_opts)
 
         # bind to a pool proc
-        hbic = await service_pool.connect_proc(session='xxx')
+        hbic = await service_pool.proc(session='xxx')
 
         # sending boot request in burst mode
         await hbic.send_code('hbi_boot()')

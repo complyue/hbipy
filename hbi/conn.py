@@ -402,17 +402,38 @@ HBI disconnecting {self.net_info} due to error:
         """
         self._loop.call_soon_threadsafe(self._loop.create_task, self.send_corun(code, bufs))
 
+    async def coget(self, code):
+        """
+        rpc in burst mode
+
+        """
+        with self.co():
+            await self.co_send_code(code, 'coget')
+            return await self.co_recv_obj()
+
     async def send_code(self, code, wire_dir=None):
+        """
+        pub/sub/notify in burst mode
+
+        """
         # use mutex to prevent interference
         with await self._send_mutex:
             await self._send_code(code, wire_dir)
 
     async def send_data(self, bufs):
+        """
+        streaming data in burst mode
+
+        """
         # use mutex to prevent interference
         with await self._send_mutex:
             await self._send_data(bufs)
 
     async def convey(self, code, bufs=None):
+        """
+        code + data in burst mode
+
+        """
         # use mutex to prevent interference
         with await self._send_mutex:
             await self._send_code(code)
@@ -420,11 +441,19 @@ HBI disconnecting {self.net_info} due to error:
                 await self._send_data(bufs)
 
     async def co_send_code(self, code, wire_dir=None):
+        """
+        one code in corun conversation
+
+        """
         if not self._corun_mutex.locked():
             raise RuntimeError('HBI not in corun mode')
         await self._send_code(code, wire_dir)
 
     async def co_send_data(self, bufs):
+        """
+        one batch data in corun conversation
+
+        """
         if not self._corun_mutex.locked():
             raise RuntimeError('HBI not in corun mode')
         await self._send_data(bufs)
@@ -502,12 +531,52 @@ HBI disconnecting {self.net_info} due to error:
         """
         raise NotImplementedError
 
+    async def _coget_helper(self, code):
+        defs = {}
+        try:
+            with self.co():
+                maybe_coro = run_in_context(code, self.context, defs)
+                if inspect.iscoroutine(maybe_coro):
+                    result = await maybe_coro
+                else:
+                    result = maybe_coro
+                await self.co_send_code(result)
+        except Exception as exc:
+            logger.error(rf'''
+HBI {self.net_info}, error co-getting code:
+--CODE--
+{code!s}
+--DEFS--
+{defs!r}
+--====--
+''', exc_info=True)
+            # try handle the error by hbic class
+            self._handle_landing_error(exc)
+        finally:
+            if len(defs) > 0:
+                logger.warning(rf'''
+HBI {self.net_info}, coget code defined something:
+--CODE--
+{code!s}
+--DEFS--
+{defs!r}
+--====--
+''')
+
     def land(self, code, wire_dir) -> Optional[tuple]:
         # Semantic of return value from this function is same as _land_one()
 
         # process non-customizable wire directives first
-        if 'corun' == wire_dir:
+        if 'coget' == wire_dir:
+            # co rpc mode
+
+            if self._corun_mutex.locked():
+                raise RuntimeError('coget nested within corun mode ?!')
+            self._loop.create_task(self._coget_helper(code))
+
+        elif 'corun' == wire_dir:
             # land the coro and start a task to run it
+
             defs = {}
             co_task, coro = None, None
             try:
@@ -530,8 +599,10 @@ HBI {self.net_info}, error landing corun code:
             finally:
                 if len(defs) > 0:
                     logger.debug('sth defined by landed corun code.', {"defs": defs, "code": code})
+
         elif 'wire' == wire_dir:
             # got wire affair packet, land it
+
             if self._wire_ctx is None:  # populate this wire's ctx jit
                 self._wire_ctx = {attr: getattr(self, attr) for attr in dir(self)}
 

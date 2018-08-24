@@ -16,6 +16,7 @@ from hbi import me
 from hbi.aio import *
 from hbi.log import *
 from hbi.util import *
+
 from . import pe
 from .mgmt import *
 
@@ -118,9 +119,11 @@ def main():
 
         if me.addr is None:
             if me.host is None:
-                import platform
+                # import platform
+                #
+                # me.host = platform.node()
+                me.host = '127.0.0.1'
 
-                me.host = platform.node()
             me.addr = {'host': me.host, 'port': me.port}
         logger.info(f'Starting HBI service pool ({hot_back}/{pool_size}) with module [{me.modu_name}] on {me.addr}')
         me.loop = asyncio.get_event_loop()

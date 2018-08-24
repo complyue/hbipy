@@ -9,8 +9,9 @@ import sys
 
 import hbi
 from hbi import me
-from hbi.pool import MicroConnection
+from hbi.pool import MicroPool
 from hbi.pool import pe
+
 from .shell import *
 
 logger = logging.getLogger(__package__)
@@ -185,10 +186,10 @@ HBI service pool interactive tact utility, usage:
                 me.addr = {'host': me.host, 'port': me.port}
 
             logger.info(f'Connecting to HBI pool {me.addr}')
-            service_pool = MicroConnection(globals(), me.addr, net_opts=me.net_opts)
+            service_pool = MicroPool(globals(), me.addr, net_opts=me.net_opts)
 
             # bind to a pool proc
-            hbic = await service_pool.connect_proc(session='xxx')
+            hbic = await service_pool.proc(session='xxx')
             logger.info(f'Assigned HBI proc {hbic}')
 
             console = HBIConsole(hbic)

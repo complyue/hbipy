@@ -10,6 +10,7 @@ import socket
 import sys
 
 import hbi
+
 from . import me
 
 __all__ = ()
@@ -81,8 +82,9 @@ def main():
 
         if me.addr is None:
             if me.host is None:
-                import platform
-                me.host = platform.node()
+                # import platform
+                # me.host = platform.node()
+                me.host = '127.0.0.1'
             me.addr = {'host': me.host, 'port': me.port}
 
         logger.info(f'Starting HBI server with module {me.modu_name} on {me.addr}')

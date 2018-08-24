@@ -10,18 +10,18 @@ from ..log import get_logger
 from ..sockconn import HBIC
 
 __all__ = [
-    'MicroConnection',
+    'MicroPool',
 ]
 
 logger = get_logger(__name__)
 
 
-class MicroConnection:
+class MicroPool:
     """
     """
     __slots__ = (
         'context', 'pool_hbic', 'proc_hbic', 'session',
-        'co', 'ack_timeout', 'net_opts',
+        'ack_timeout', 'net_opts',
         'proc_conn_cache',
     )
 
@@ -36,7 +36,6 @@ class MicroConnection:
         self.pool_hbic = HBIC(globals(), pool_addr, net_opts)
         self.proc_hbic = None
         self.session = session
-        self.co = None
         self.ack_timeout = float(ack_timeout)
         self.net_opts = net_opts
         self.proc_conn_cache = {}
@@ -44,7 +43,7 @@ class MicroConnection:
         self.pool_hbic.connect()
 
     def disconnect(self, err_reason: str = None, err_stack: str = None):
-        # todo handle errors here
+        # todo elaborate error handling here
         for k, c in self.proc_conn_cache.items():
             c.disconnect(err_reason, err_stack)
         self.pool_hbic.disconnect(err_reason, err_stack)
@@ -59,7 +58,7 @@ class MicroConnection:
             return None
         return self.proc_hbic.addr
 
-    async def connect_proc(self, session: str = None):
+    async def proc(self, session: str = None):
         if session == self.session:
             # session not changed, can reuse connection to proc if still alive
             if self.proc_hbic is not None and self.proc_hbic.connected:
@@ -100,8 +99,23 @@ assign_proc({self.session!r})
 
         return self.proc_hbic
 
+    def co(self, session: str = None):
+        return MicroCo(self, session)
+
+
+class MicroCo:
+    """
+
+    """
+    __slots__ = ('pool', 'session', 'co',)
+
+    def __init__(self, pool: MicroPool, session: str = None):
+        self.pool = pool
+        self.session = session
+        self.co = None
+
     async def __aenter__(self):
-        proc_hbic = await self.connect_proc()
+        proc_hbic = await self.pool.proc(self.session)
         co = proc_hbic.co()
         hbic = await co.__aenter__()
         self.co = co

@@ -30,7 +30,7 @@ def hbi_connected():
 
 
 def hbi_boot():
-    hbi_peer.disconnect('You normally connect to HBI pool via hbi.pool.MicroConnection()')
+    hbi_peer.disconnect('You normally connect to HBI pool via hbi.pool.MicroPool()')
 
 
 async def assign_proc(session: str = None):
