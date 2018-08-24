@@ -407,7 +407,7 @@ HBI disconnecting {self.net_info} due to error:
         rpc in burst mode
 
         """
-        with self.co():
+        async with self.co():
             await self.co_send_code(code, 'coget')
             return await self.co_recv_obj()
 
@@ -534,7 +534,7 @@ HBI disconnecting {self.net_info} due to error:
     async def _coget_helper(self, code):
         defs = {}
         try:
-            with self.co():
+            async with self.co():
                 maybe_coro = run_in_context(code, self.context, defs)
                 if inspect.iscoroutine(maybe_coro):
                     result = await maybe_coro
@@ -572,7 +572,9 @@ HBI {self.net_info}, coget code defined something:
 
             if self._corun_mutex.locked():
                 raise RuntimeError('coget nested within corun mode ?!')
-            self._loop.create_task(self._coget_helper(code))
+            coro = self._coget_helper(code)
+            co_task = self._loop.create_task(coro)
+            return None, co_task, coro
 
         elif 'corun' == wire_dir:
             # land the coro and start a task to run it
