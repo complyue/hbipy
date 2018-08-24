@@ -3,10 +3,10 @@ Micro service Consumer Peer
 
 """
 
+from typing import *
+
 import hbi
-
 from hbi import me
-
 from hbi.log import get_logger
 from hbi.pool import pe
 from hbi.pool.mgmt import *
@@ -33,8 +33,10 @@ def hbi_boot():
     hbi_peer.disconnect('You normally connect to HBI pool via hbi.pool.MicroPool()')
 
 
-async def assign_proc(session: str = None):
+async def assign_proc(session: str = None, sticky: Optional[bool] = None):
     consumer.session = session
+    if sticky is not None:
+        consumer.sticky = bool(sticky)
     proc_port = await pe.master.assign_proc(consumer)
     await hbi_peer.co_send_code(repr({
         'host': me.host, 'port': proc_port,

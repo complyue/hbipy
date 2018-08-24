@@ -28,11 +28,12 @@ class MicroConsumer:
     micro service pool consumer
 
     """
-    __slots__ = 'hbi_peer', 'session', 'assigned_worker',
+    __slots__ = 'hbi_peer', 'session', 'sticky', 'assigned_worker',
 
-    def __init__(self, hbi_peer: HBIC):
+    def __init__(self, hbi_peer: HBIC, sticky: bool = True):
         self.hbi_peer: HBIC = hbi_peer
         self.session: str = None
+        self.sticky: bool = bool(sticky)
         self.assigned_worker: MicroWorker = None
 
 
@@ -44,7 +45,8 @@ class MicroMaster:
 
     __slots__ = (
         'pool_size', 'hot_back', 'ack_timeout',
-        'team_addr', '_pool_hbis_task', '_all_workers', '_pending_workers', '_idle_workers', '_workers_by_pid'
+        'team_addr', '_pool_hbis_task', '_all_workers', '_pending_workers', '_idle_workers', '_workers_by_pid',
+        '_workers_by_session',
     )
 
     def __init__(
@@ -67,6 +69,7 @@ class MicroMaster:
         self._pending_workers = set()
         self._idle_workers = asyncio.Queue()
         self._workers_by_pid = {}
+        self._workers_by_session = {}
 
     def start_pool(self, loop=None):
         assert self._pool_hbis_task is None, 'start an already started pool ?!'
@@ -102,7 +105,8 @@ class MicroMaster:
         self._all_workers.clear()
         self._pending_workers.clear()
         self._idle_workers = asyncio.LifoQueue()
-        self._workers_by_pid = {}
+        self._workers_by_pid.clear()
+        self._workers_by_session.clear()
 
     def status(self):
         if self._pool_hbis_task is None:
@@ -152,51 +156,89 @@ class MicroMaster:
             self._all_workers.add(MicroWorker(self))
             idle_quota -= 1
 
-        # currently proc is assigned to sole consumer until it releases or disconnects
-        if consumer.assigned_worker is None:
-            # find an idle worker for this consumer, prefer adhere session
+        # check repeated assignment requests
+        worker = consumer.assigned_worker
+        if worker is not None and worker.check_alive():
+            # this consumer have had a worker assigned, and still alive
+            if worker.last_session != consumer.session:
+                # consumer changed session
+                if consumer.session is not None and consumer.sticky:
+                    raise RuntimeError(f'{consumer} requested sticky session but changed session itself ?!')
+                # prepare for new session if changed
+                if worker.last_session is not None:
+                    if self._workers_by_session.get(worker.last_session, None) is worker:
+                        del self._workers_by_session[worker.last_session]
+                    worker.last_session = None
+                if consumer.session is not None:
+                    self._workers_by_session[consumer.session] = worker
+                await worker.prepare_session(consumer.session)
+                assert worker.last_session == consumer.session
+                return worker.proc_port
 
-            searched_workers = set()
-            while True:
-                worker: MicroWorker = await self._idle_workers.get()
-                if not worker.check_alive():
-                    # this worker already dead, should have been restarting,
-                    # try next idle worker in queue
-                    continue
+        # if the consumer requested sticky session, assign the session worker regardless of idle status,
+        # concurrency/parallelism is offloaded to the proc worker process
+        if consumer.sticky and consumer.session is not None:
+            sticky_session = consumer.session
+            worker: 'MicroWorker' = self._workers_by_session.get(sticky_session, None)
+            if worker is not None and worker.check_alive():
+                if worker.last_session == sticky_session:
+                    # a sticky session worker is alive, assign it
+                    consumer.assigned_worker = worker
+                    return worker.proc_port
+                if worker.last_session is not None:
+                    raise RuntimeError(
+                        f'Worker by session dict corrupted ?! [{sticky_session}] => [{worker.last_session}]'
+                    )
+                # this worker is still preparing the sticky session, assign it after preparation finished,
+                # this ensures concurrent assignment requests for a same sticky session won't trigger multiple
+                # proc workers
+                prepared_session = await worker.prepared_session
+                if prepared_session == sticky_session:
+                    return worker.proc_port
 
-                # got an idle worker
-                if consumer.session is None:
-                    # no session designated
-                    if worker.last_session is None:
-                        # found a worker lastly worked for no session, this considered an ideal match
-                        break
-                else:
-                    # with a designated session from consumer
-                    if worker.last_session == consumer.session:
-                        # found the ideal worker lastly worked for the requested session
-                        break
+        # no sticky session requested, or no proc worker for the requested session yet
 
-                if worker in searched_workers:
-                    # reached a known idle worker, meaning we've searched all idle workers without ideal session match,
-                    # use this worker anyway
+        # find an idle worker for this consumer, prefer adhere session
+        searched_workers = set()
+        while True:
+            worker: MicroWorker = await self._idle_workers.get()
+            if not worker.check_alive():
+                # this worker already dead, should have been restarting,
+                # try next idle worker in queue
+                continue
+
+            # got an idle worker
+            if consumer.session is None:
+                # no session designated
+                if worker.last_session is None:
+                    # found a worker lastly worked for no session, this considered an ideal match
+                    break
+            else:
+                # with a designated session from consumer
+                if worker.last_session == consumer.session:
+                    # found the ideal worker lastly worked for the requested session
                     break
 
-                # record this idle worker as known by first pass search, and back-queue this idle worker
-                searched_workers.add(worker)
-                self._idle_workers.put_nowait(worker)
-                # as we are still in first pass of search, we'd pursue an ideal session match
+            if worker in searched_workers:
+                # reached a known idle worker, meaning we've searched all idle workers without ideal session match,
+                # use this worker anyway
+                break
 
-            if worker.last_session != consumer.session:
-                await worker.prepare_session(consumer.session)
-                assert worker.last_session == consumer.session
-                consumer.assigned_worker = worker
-        else:
-            # reuse assigned worker, prepare session if changed
+            # record this idle worker as known by first pass search, and back-queue this idle worker
+            searched_workers.add(worker)
+            self._idle_workers.put_nowait(worker)
+            # as we are still in first pass of search, we'd pursue an ideal session match
 
-            worker = consumer.assigned_worker
-            if worker.last_session != consumer.session:
-                await worker.prepare_session(consumer.session)
-                assert worker.last_session == consumer.session
+        if worker.last_session != consumer.session:
+            if worker.last_session is not None:
+                if self._workers_by_session.get(worker.last_session, None) is worker:
+                    del self._workers_by_session[worker.last_session]
+                worker.last_session = None
+            if consumer.session is not None:
+                self._workers_by_session[consumer.session] = worker
+            await worker.prepare_session(consumer.session)
+            assert worker.last_session == consumer.session
+            consumer.assigned_worker = worker
 
         return worker.proc_port
 
@@ -219,7 +261,7 @@ class MicroWorker:
         'po',
         'hbi_peer',
         'proc_port', 'load',
-        'last_act_time', 'last_session',
+        'last_act_time', 'last_session', 'prepared_session',
     )
 
     def __init__(self, master: MicroMaster):
@@ -230,6 +272,8 @@ class MicroWorker:
         self.load = nan
         self.last_act_time = 0.0
         self.last_session = None
+        self.prepared_session = asyncio.get_event_loop().create_future()
+        self.prepared_session.set_result(self.last_session)
 
         self.start_worker_process()
 
@@ -239,6 +283,13 @@ class MicroWorker:
         return f'MicroWorker[{self.po.pid}]'
 
     def start_worker_process(self):
+        session = self.last_session
+        if session is not None:
+            session_worker = self.master._workers_by_session.get(session, None)
+            if session_worker is self:
+                del self.master._workers_by_session[session]
+            self.last_session = None
+
         # pydev debuggers have difficulties figuring out subprocesses to be started with `python -m <modu>` cmdl,
         # have to use the helper script
         import hbi
@@ -325,10 +376,16 @@ class MicroWorker:
         await self.master.worker_serving(self)
 
     async def prepare_session(self, session: str = None):
-        async with self.hbi_peer.co()as hbi_peer:
-            await hbi_peer.send_corun(rf'''
+        prepared_session = self.prepared_session = asyncio.get_event_loop().create_future()
+        try:
+            async with self.hbi_peer.co() as hbi_peer:
+                await hbi_peer.send_corun(rf'''
 prepare_session({session!r})
 ''')
-            confirmed_session = await hbi_peer.co_recv_obj()
-            assert confirmed_session == session
-            self.last_session = session
+                confirmed_session = await hbi_peer.co_recv_obj()
+                assert confirmed_session == session
+                self.last_session = confirmed_session
+            prepared_session.set_result(confirmed_session)
+        except Exception as exc:
+            prepared_session.set_exception(exc)
+            raise
