@@ -491,13 +491,41 @@ HBI disconnecting {self.net_info} due to error:
 
         return self._loop.create_task(notif_corun_out_sending())
 
+    async def co_send_corun(self, code):
+        """
+        Send a piece of code to be executed remotely, but its direct result
+        has no impact to peer conversation.
+        While the execution can also generate any number of `co_send_code()`
+        and/or `co_send_data()` calls at peer, for subsequent calls to
+        `co_recv_obj()` and/or `co_recv_data()` from local corun
+        conversation to receive them.
+
+        Must in a corun conversation or RuntimeError will raise.
+
+        """
+        if self._co_remote_ack is not None:
+            # in active corun conversation, remote may not have acked suspension
+            # of other sendings, but that's okay for pipelined out sending from
+            # local conversation
+            local_co_id = id(self._co_remote_ack)
+        else:
+            # not in active corun conversation
+            if self._co_local_ack is None:
+                # nor in passive corun conversation
+                raise RuntimeError('Not in corun conversation!')
+            # in passive corun conversation
+            # must wait until co_ack has been put on wire
+            remote_co_id = await self._co_local_ack
+
+        await self._send_code(code, b'corun')
+
     async def co_send_code(self, code):
         """
         Send a piece of code to be executed remotely, whose direct result will
         feed into a `co_recv_obj()` call waiting within peer conversation.
-        And the execution can also generate any number of `co_send_code()`
+        While the execution can also generate any number of `co_send_code()`
         and/or `co_send_data()` calls at peer, for subsequent calls to
-        `co_recv_obj()` and/or `co_recv_data()` within current corun
+        `co_recv_obj()` and/or `co_recv_data()` from local corun
         conversation to receive them.
 
         Must in a corun conversation or RuntimeError will raise.
