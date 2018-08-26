@@ -27,7 +27,7 @@ pe.team_addr, = sys.argv[1:]
 
 
 def hbi_connected():
-    hbi_peer.fire_corun(rf'''
+    hbi_peer.send_notification(rf'''
 worker_online({os.getpid()!r})
 ''')
 
@@ -43,8 +43,9 @@ async def serv_hbi_module(me_dict: dict, pe_dict: dict):
 
     logger.info(f'Starting HBI proc with module [{me.modu_name}] on {me.host}')
     me.server = await hbi.HBIC.create_server(
-        lambda: runpy.run_module(me.modu_name, init_globals=me.init_globals, run_name='__hbi_accepting__'),
-        addr={
+        lambda: runpy.run_module(
+            me.modu_name, init_globals=me.init_globals, run_name='__hbi_accepting__'
+        ), addr={
             'host': me.host, 'port': None,  # let os assign arbitrary port
         }, net_opts=me.net_opts, loop=me.loop
     )
@@ -58,7 +59,7 @@ async def serv_hbi_module(me_dict: dict, pe_dict: dict):
         assert callable(hbi_proc_session_changing_to)
         # todo validate that it accepts a single str arg as new session id
 
-    await hbi_peer.send_corun(rf'''
+    hbi_peer.send_notification(rf'''
 worker_serving({me.port!r})
 ''')
 
@@ -69,7 +70,7 @@ async def prepare_session(session: str = None):
             # notify session change to HBI module if it defines a hook function
             hbi_proc_session_changing_to(session)
         pe.session = session
-    await hbi_peer.co_send_code(repr(pe.session))
+    return pe.session
 
 
 async def retire(force: bool = False):
@@ -105,7 +106,8 @@ def hbi_disconnected(exc=None):
             logger.warning(f'HBI proc worker subprocess {os.getpid()} retired with error: {exc!s}')
     else:
         logger.fatal(
-            f'HBI proc worker subprocess {os.getpid()} unexpectedly disconnected from team, error: {exc!s}'
+            f'HBI proc worker subprocess {os.getpid()} unexpectedly disconnected from team,'
+            f' error: {exc!s}'
         )
 
     # try graceful worker process exit by stopping event loop

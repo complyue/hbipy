@@ -342,7 +342,8 @@ class MicroWorker:
         assert self.po is not None
 
         if self.po.poll() is not None:
-            # this subprocess got a returncode, but it may because a debugger is attached, check via os signal
+            # this subprocess got a returncode, but it may because a debugger is attached,
+            # check via os signal
             try:
                 os.kill(self.po.pid, 0)
                 # proc process pid still exists, most likely a debugger is attached,
@@ -379,10 +380,9 @@ class MicroWorker:
         prepared_session = self.prepared_session = asyncio.get_event_loop().create_future()
         try:
             async with self.hbi_peer.co() as hbi_peer:
-                await hbi_peer.send_corun(rf'''
+                confirmed_session = await hbi_peer.co_get_result(rf'''
 prepare_session({session!r})
 ''')
-                confirmed_session = await hbi_peer.co_recv_obj()
                 assert confirmed_session == session
                 self.last_session = confirmed_session
             prepared_session.set_result(confirmed_session)

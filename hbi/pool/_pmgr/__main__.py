@@ -21,7 +21,7 @@ worker: MicroWorker = None
 worker_serving = None
 
 
-async def worker_online(pid: int):
+def worker_online(pid: int):
     global worker, worker_serving
     assert worker is None, 'worker subprocess repeating online ?!'
     worker = pe.master.register_proc(pid, hbi_peer)
@@ -29,7 +29,7 @@ async def worker_online(pid: int):
 
     worker_serving = worker.report_serving
 
-    await hbi_peer.send_corun(rf'''
+    hbi_peer.send_notification(rf'''
 serv_hbi_module(
     { {k:vars(me)[k] for k in me.__share__} !r},
     { {k:vars(pe)[k] for k in pe.__share__} !r},

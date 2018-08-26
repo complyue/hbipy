@@ -38,9 +38,9 @@ async def assign_proc(session: str = None, sticky: Optional[bool] = None):
     if sticky is not None:
         consumer.sticky = bool(sticky)
     proc_port = await pe.master.assign_proc(consumer)
-    await hbi_peer.co_send_code(repr({
+    return {
         'host': me.host, 'port': proc_port,
-    }))
+    }
 
 
 def release_proc():

@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import inspect
 import logging
 from collections import deque
@@ -12,39 +11,38 @@ from .sendctrl import SendCtrl
 
 __all__ = [
     'AbstractHBIC',
-    'corun_with', 'run_coro_with',
 ]
 
 logger = logging.getLogger(__name__)
 
 
-def resolve_coro(coro, to_fut):
-    assert asyncio.isfuture(coro)
+def chain_future(from_fut, to_fut):
+    assert asyncio.isfuture(from_fut)
 
     if to_fut.done():
         # target already cancelled etc.
         return
 
-    def coro_cb(coro_fut):
+    def from_fut_cb(fut):
 
         if to_fut.done():
             # target already cancelled etc.
             return
 
-        if coro_fut.cancelled():
+        if fut.cancelled():
             to_fut.cancel()
-        elif coro_fut.exception() is not None:
-            to_fut.set_exception(coro_fut.exception())
+        elif fut.exception() is not None:
+            to_fut.set_exception(fut.exception())
         else:
-            fr = coro_fut.result()
+            fr = fut.result()
             if asyncio.isfuture(fr):
-                # continue the coro chain
-                resolve_coro(fr, to_fut)
+                # continue the from_fut chain
+                chain_future(fr, to_fut)
             else:
                 # just resolved
                 to_fut.set_result(fr)
 
-    asyncio.ensure_future(coro).add_done_callback(coro_cb)
+    asyncio.ensure_future(from_fut).add_done_callback(from_fut_cb)
 
 
 class AbstractHBIC:
@@ -104,11 +102,12 @@ class AbstractHBIC:
 
         'low_water_mark_send', 'high_water_mark_send', '_send_mutex',
 
-        '_recv_buffer',
+        '_recv_buffer', 'app_queue_size',
         'low_water_mark_recv', 'high_water_mark_recv',
-        '_recv_obj_waiters',
+        '_landed_queue', '_recv_obj_waiters',
 
-        '_corun_mutex',
+        '_corun_mutex', '_co_remote_ack',
+        '_co_local_ack', '_co_local_done',
     )
 
     def __init__(
@@ -116,7 +115,7 @@ class AbstractHBIC:
             context,
             addr=None, net_opts=None,
             *,
-            send_only=False,
+            send_only=False, app_queue_size: int = 500,
             low_water_mark_send=6 * 1024 * 1024, high_water_mark_send=20 * 1024 * 1024,
             low_water_mark_recv=6 * 1024 * 1024, high_water_mark_recv=20 * 1024 * 1024,
             loop=None,
@@ -145,11 +144,16 @@ class AbstractHBIC:
         self._send_mutex = SendCtrl(loop=loop)
 
         self._recv_buffer = None
+        self.app_queue_size = int(app_queue_size)
         self.low_water_mark_recv = low_water_mark_recv
         self.high_water_mark_recv = high_water_mark_recv
+        self._landed_queue = deque()
         self._recv_obj_waiters = deque()
 
         self._corun_mutex = asyncio.Lock(loop=loop)
+        self._co_remote_ack = None
+        self._co_local_ack = None
+        self._co_local_done = None
 
     def __str__(self):
         return f'HBI:{self.net_info}'
@@ -176,8 +180,9 @@ class AbstractHBIC:
                     # HBI module claimed successful handling of this error
                     return
 
-            # if in corun mode with at least one waiter, leave the error to be thrown into the coro running
-            if self._corun_mutex.locked() and len(self._recv_obj_waiters) > 0:
+            # if in corun mode with at least one waiter, leave the error to be thrown into the coro
+            # running
+            if self._corun_mutex.locked() and self._recv_obj_waiters:
                 return
 
         except Exception:
@@ -198,7 +203,7 @@ class AbstractHBIC:
                     # HBI module claimed successful handling of this error
                     return
 
-            if len(self._recv_obj_waiters) > 0:
+            if self._recv_obj_waiters:
                 # propagate peer error to co-receivers
                 exc = RuntimeError(f'HBI peer error: {message!s}')
                 waiters = self._recv_obj_waiters
@@ -263,7 +268,7 @@ HBI disconnecting {self.net_info} due to error:
 {err_reason}
  ---
 {err_stack or '<no-stack>'}
- ===''')
+ ===''', stack_info=True)
 
         disconn_cb = self.context.get('hbi_disconnecting', None)
         if disconn_cb is not None:
@@ -339,7 +344,11 @@ HBI disconnecting {self.net_info} due to error:
         self._disconnecting = False
 
         if self.connected:
-            if (addr is None or addr == self.addr) and (net_opts is None or net_opts == self.net_opts):
+            if (
+                    addr is None or addr == self.addr
+            ) and (
+                    net_opts is None or net_opts == self.net_opts
+            ):
                 # already connected as expected
                 return
             raise asyncio.InvalidStateError(
@@ -388,81 +397,185 @@ HBI disconnecting {self.net_info} due to error:
 
         return self._loop.run_until_complete(self.wait_connected())
 
-    def fire(self, code, bufs=None):
+    # implement HBIC as reusable async context manager for grace disconnection
+
+    async def __aenter__(self):
+        await self.wait_connected()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            err_reason = None
+            err_stack = None
+        else:
+            import traceback
+            err_reason = exc_val if isinstance(exc_val, BaseException) else exc_type(exc_val)
+            err_stack = ''.join(traceback.format_exception(exc_type, exc_val, exc_tb))
+
+        self.disconnect(err_reason, err_stack, try_send_peer_err=True)
+        await self.wait_disconnected()
+
+    @property
+    def in_corun(self):
         """
-        Fire and forget.
+        whether local peer is currently in corun mode
 
         """
-        self._loop.call_soon_threadsafe(self._loop.create_task, self.convey(code, bufs))
+        if self._co_remote_ack is not None:
+            assert self._corun_mutex.locked(), '?!'
+            return True
+        else:
+            assert not self._corun_mutex.locked(), '?!'
+            return False
+
+    def fire(self, code):
+        """
+        Fire a piece of plain code for remote execution and forget about it.
+
+        """
+        self._loop.call_soon_threadsafe(
+            self.send_notification, code,
+        )
 
     def fire_corun(self, code, bufs=None):
         """
-        Fire and forget.
+        Fire a piece of corun code, optionally with binary data, for remote execution
+        and forget about it.
 
         """
-        self._loop.call_soon_threadsafe(self._loop.create_task, self.send_corun(code, bufs))
+        self._loop.call_soon_threadsafe(
+            self.send_notification_corun, code, bufs,
+        )
 
-    async def coget(self, code):
+    def send_notification(self, code):
         """
-        rpc in burst mode
+        Schedule a piece of plain code to be executed remotely for a notification.
 
-        """
-        async with self.co():
-            await self.co_send_code(code, 'coget')
-            return await self.co_recv_obj()
+        The actual sending will be postponed to next send opportunity, when locally no
+        other corun conversation or notification is on the go.
 
-    async def send_code(self, code, wire_dir=None):
-        """
-        pub/sub/notify in burst mode
+        The returned task can be awaited or chained for further processing.
 
-        """
-        # use mutex to prevent interference
-        with await self._send_mutex:
-            await self._send_code(code, wire_dir)
-
-    async def send_data(self, bufs):
-        """
-        streaming data in burst mode
+        Warning: if you await the returned task from a local corun conversaion,
+        deadlock will occur because that task won't be startd until current
+        conversaion ended.
 
         """
-        # use mutex to prevent interference
-        with await self._send_mutex:
-            await self._send_data(bufs)
 
-    async def convey(self, code, bufs=None):
+        async def notif_out_sending():
+            async with self._send_mutex:
+                await self._send_code(code)
+
+        return self._loop.create_task(notif_out_sending())
+
+    def send_notification_corun(self, code, bufs=None):
         """
-        code + data in burst mode
+        Schedule a piece of corun code to be executed remotely for a notification.
+
+        The actual sending will be postponed to next send opportunity, when locally no
+        other corun conversation or notification is on the go.
+
+        The returned task can be awaited or chained for further processing.
+
+        Warning: if you await the returned task from a local corun conversaion,
+        deadlock will occur because that task won't be startd until current
+        conversaion ended.
 
         """
-        # use mutex to prevent interference
-        with await self._send_mutex:
-            await self._send_code(code)
-            if bufs is not None:
-                await self._send_data(bufs)
 
-    async def co_send_code(self, code, wire_dir=None):
+        async def notif_corun_out_sending():
+            async with self.co():
+                await self._send_code(code, b'corun')
+                if bufs is not None:
+                    await self._send_data(bufs)
+
+        return self._loop.create_task(notif_corun_out_sending())
+
+    async def co_send_code(self, code):
         """
-        one code in corun conversation
+        Send a piece of code to be executed remotely, whose direct result will
+        feed into a `co_recv_obj()` call waiting within peer conversation.
+        And the execution can also generate any number of `co_send_code()`
+        and/or `co_send_data()` calls at peer, for subsequent calls to
+        `co_recv_obj()` and/or `co_recv_data()` within current corun
+        conversation to receive them.
+
+        Must in a corun conversation or RuntimeError will raise.
 
         """
-        if not self._corun_mutex.locked():
-            raise RuntimeError('HBI not in corun mode')
-        await self._send_code(code, wire_dir)
+        if self._co_remote_ack is not None:
+            # in active corun conversation, remote may not have acked suspension
+            # of other sendings, but that's okay for pipelined out sending from
+            # local conversation
+            local_co_id = id(self._co_remote_ack)
+        else:
+            # not in active corun conversation
+            if self._co_local_ack is None:
+                # nor in passive corun conversation
+                raise RuntimeError('Not in corun conversation!')
+            # in passive corun conversation
+            # must wait until co_ack has been put on wire
+            remote_co_id = await self._co_local_ack
+
+        await self._send_code(code)
 
     async def co_send_data(self, bufs):
         """
-        one batch data in corun conversation
+        Send a bulk of binary data meant to be received by the remote corun
+        conversation, the remote conversation must know the exact size of the
+        data from previous communications, or the HBI wire will get corrupted.
+
+        Must in a corun conversation or RuntimeError will raise.
 
         """
-        if not self._corun_mutex.locked():
-            raise RuntimeError('HBI not in corun mode')
+        if self._co_remote_ack is not None:
+            # in active corun conversation, remote may not have acked suspension
+            # of other sendings, but that's okay for pipelined out sending from
+            # local conversation
+            local_co_id = id(self._co_remote_ack)
+        else:
+            # not in active corun conversation
+            if self._co_local_ack is None:
+                # nor in passive corun conversation
+                raise RuntimeError('Not in corun conversation!')
+            # in passive corun conversation
+            # must wait until co_ack has been put on wire
+            remote_co_id = await self._co_local_ack
+
         await self._send_data(bufs)
+
+    async def co_get_result(self, code):
+        """
+        Send a piece of code to be executed remotely, and receive its result
+        right back.
+
+        Must in a corun conversation or RuntimeError will raise.
+
+        """
+        if self._co_remote_ack is not None:
+            # in active corun conversation, remote may not have acked suspension
+            # of other sendings, but that's okay for pipelined out sending from
+            # local conversation
+            local_co_id = id(self._co_remote_ack)
+        else:
+            # not in active corun conversation
+            if self._co_local_ack is None:
+                # nor in passive corun conversation
+                raise RuntimeError('Not in corun conversation!')
+            # in passive corun conversation
+            # must wait until co_ack has been put on wire
+            remote_co_id = await self._co_local_ack
+
+        await self._send_code(code, b'coget')
+        result = await self.co_recv_obj()
+        return result
 
     async def _send_code(self, code, wire_dir=None):
         if not self.connected:
             raise RuntimeError('HBI wire not connected')
 
-        # convert wire_dir as early as possible, will save conversions in case the code is of complex structure
+        # convert wire_dir as early as possible, will save conversions in case
+        # the code is of complex structure
         if wire_dir is None:
             wire_dir = b''
         elif not isinstance(wire_dir, (bytes, bytearray)):
@@ -532,18 +645,36 @@ HBI disconnecting {self.net_info} due to error:
         raise NotImplementedError
 
     async def _coget_helper(self, code):
+        if self._co_remote_ack is not None:
+            # in active corun conversation, remote may not have acked suspension
+            # of other sendings, but that's okay for pipelined out sending from
+            # local conversation
+            local_co_id = id(self._co_remote_ack)
+        else:
+            # not in active corun conversation
+            if self._co_local_ack is None:
+                # nor in passive corun conversation
+                raise RuntimeError('coget out of corun conversation!')
+            # in passive corun conversation
+            # wait until co_ack has been put on wire
+            remote_co_id = await self._co_local_ack
+
         defs = {}
         try:
-            async with self.co():
-                maybe_coro = run_in_context(code, self.context, defs)
-                if inspect.iscoroutine(maybe_coro):
-                    result = await maybe_coro
-                else:
-                    result = maybe_coro
-                await self.co_send_code(result)
+
+            # execute code for result
+            maybe_coro = run_in_context(code, self.context, defs)
+            if inspect.iscoroutine(maybe_coro):
+                result = await maybe_coro
+            else:
+                result = maybe_coro
+
+            # send result back
+            await self._send_code(repr(result))
+
         except Exception as exc:
             logger.error(rf'''
-HBI {self.net_info}, error co-getting code:
+HBI {self.net_info}, error co-getting for remote conversation {remote_co_id}:
 --CODE--
 {code!s}
 --DEFS--
@@ -552,55 +683,123 @@ HBI {self.net_info}, error co-getting code:
 ''', exc_info=True)
             # try handle the error by hbic class
             self._handle_landing_error(exc)
-        finally:
-            if len(defs) > 0:
-                logger.warning(rf'''
-HBI {self.net_info}, coget code defined something:
---CODE--
-{code!s}
---DEFS--
-{defs!r}
---====--
-''')
 
-    def land(self, code, wire_dir) -> Optional[tuple]:
-        # Semantic of return value from this function is same as _land_one()
+    async def _corun_helper(self, code):
+        if self._co_remote_ack is not None:
+            # in active corun conversation, remote may not have acked suspension
+            # of other sendings, but that's okay for pipelined out sending from
+            # local conversation
+            local_co_id = id(self._co_remote_ack)
+        else:
+            # not in active corun conversation
+            if self._co_local_ack is None:
+                # nor in passive corun conversation
+                raise RuntimeError('coget out of corun conversation!')
+            # in passive corun conversation
+            # wait until co_ack has been put on wire
+            remote_co_id = await self._co_local_ack
 
-        # process non-customizable wire directives first
-        if 'coget' == wire_dir:
-            # co rpc mode
+        defs = {}
+        try:
 
-            if self._corun_mutex.locked():
-                raise RuntimeError('coget nested within corun mode ?!')
-            coro = self._coget_helper(code)
-            co_task = self._loop.create_task(coro)
-            return None, co_task, coro
+            # execute corun code
+            maybe_coro = run_in_context(code, self.context, defs)
+            if inspect.iscoroutine(maybe_coro):
+                await maybe_coro
 
-        elif 'corun' == wire_dir:
-            # land the coro and start a task to run it
-
-            defs = {}
-            co_task, coro = None, None
-            try:
-                coro = run_in_context(code, self.context, defs)
-                if not inspect.iscoroutine(coro):
-                    raise RuntimeError(f'Not a coroutine for corun: type={type(coro)!r}, {coro!r}')
-                co_task = self.corun(coro)
-                return None, co_task, coro
-            except Exception as exc:
-                logger.debug(rf'''
-HBI {self.net_info}, error landing corun code:
+        except Exception as exc:
+            logger.error(rf'''
+HBI {self.net_info}, error co-getting for remote conversation {remote_co_id}:
 --CODE--
 {code!s}
 --DEFS--
 {defs!r}
 --====--
 ''', exc_info=True)
-                self._handle_landing_error(exc)
-                return exc, co_task, coro
-            finally:
-                if len(defs) > 0:
-                    logger.debug('sth defined by landed corun code.', {"defs": defs, "code": code})
+            # try handle the error by hbic class
+            self._handle_landing_error(exc)
+
+    async def _co_helper(self, remote_co_id):
+        local_ack, local_done = self._co_local_ack, self._co_local_done
+        assert local_ack is not None and not local_ack.done(), '?!'
+        async with self._send_mutex:
+            # prevent other sending since the co_ack sent to remote
+            # until remote closed corun conversation by sending co_end,
+            # which will trigger local_done, then this coro finish
+            await self._send_text(repr(remote_co_id), b'co_ack')
+            local_ack.set_result(remote_co_id)
+            done_co_id = await local_done
+            assert done_co_id == remote_co_id, '?!'
+
+    def _land_(self, code, wire_dir) -> Optional[tuple]:
+        # Semantic of return value from this function is same as _land_one()
+
+        # process non-customizable wire directives first
+        if 'co_begin' == wire_dir:
+
+            if self._co_local_ack is not None:
+                self.disconnect('Unclean co_begin!')
+                return None,
+            remote_co_id = eval(code)
+            self._co_local_ack = self._loop.create_future()
+            self._co_local_done = self._loop.create_future()
+            # use a helper coro to hold the send mutex during remote corun
+            # conversation, so no extra object/data except those requested by
+            # that conversation can be sent to remote peer before it ends.
+            self._loop.create_task(self._co_helper(remote_co_id))
+            return None,
+
+        elif 'co_end' == wire_dir:
+
+            remote_co_id = eval(code)
+            local_ack, local_done = self._co_local_ack, self._co_local_done
+            if local_ack is None or local_done is None:
+                self.disconnect('Uninitialized co_end!')
+                return None,
+            assert not local_done.done(), 'done already ?! extra co_end ?!'
+
+            def local_co_end(fut):
+                assert fut is local_ack
+                if local_ack.result() != remote_co_id:
+                    self.disconnect('Mismatch co_end!')
+                else:
+                    local_done.set_result(remote_co_id)
+                    self._co_local_ack, self._co_local_done = None, None
+                    if self._landed_queue:
+                        logger.warning(
+                            f'Non-empty app queue ({len(self._landed_queue)} objects)'
+                            f' at end of passive conversation.'
+                        )
+                        self._landed_queue.clear()
+
+            local_ack.add_done_callback(local_co_end)
+            # use a done callback so racing condition is no problem
+            return None,
+
+        elif 'co_ack' == wire_dir:
+
+            remote_ack = self._co_remote_ack
+            if remote_ack is None or remote_ack.done():
+                self.disconnect('Unexpected co_ack!')
+                return None,
+            received_co_id = eval(code)
+            assert received_co_id == id(self._co_remote_ack), 'co id mismatch ?!'
+            remote_ack.set_result(received_co_id)
+            return None,
+
+        elif 'coget' == wire_dir:
+            # single request/response, rpc style
+
+            coro = self._coget_helper(code)
+            co_task = self._loop.create_task(coro)
+            return None,  # don't make available to application
+
+        elif 'corun' == wire_dir:
+            # flex code/data streaming, pipeline style
+
+            coro = self._corun_helper(code)
+            co_task = self._loop.create_task(coro)
+            return None,  # don't make available to application
 
         elif 'wire' == wire_dir:
             # got wire affair packet, land it
@@ -625,12 +824,10 @@ HBI {self.net_info}, error landing wire code:
 --====--
 ''', exc_info=True)
                 self._handle_wire_error(exc)
-                return None,  # treat wire error as void protocol affair, giving NO value to application layer
-            finally:
-                if len(defs) > 0:
-                    logger.warning('landed wire code defines sth.', {"defs": defs, "code": code})
+                # treat wire error as void protocol affair, giving NO value to application layer
+                return None,
 
-        # allow customization of code landing
+                # allow customization of code landing
         lander = self.context.get('__hbi_land__', None)
         if lander is not None:
             assert callable(lander), 'non-callable __hbi_land__ defined ?!'
@@ -652,6 +849,7 @@ HBI {self.net_info}, error custom landing code:
         # standard landing
         if wire_dir is None or len(wire_dir) <= 0:
             # got plain packet, land it
+
             defs = {}
             try:
 
@@ -676,16 +874,6 @@ HBI {self.net_info}, error landing code:
                 # return the err so if a coro running, it has a chance to capture it
                 return exc, None
 
-            finally:
-                if len(defs) > 0:
-                    logger.debug(rf'''
-HBI {self.net_info}, landed code defined something:
---CODE--
-{code!s}
---DEFS--
-{defs!r}
---====--
-''')
         else:
             raise RuntimeError(f'HBI unknown wire directive [{wire_dir}]')
 
@@ -714,8 +902,9 @@ HBI {self.net_info}, landed code defined something:
         self._data_sink = None
         if read_ahead:
             self._recv_buffer.appendleft(read_ahead)
-        # this should have been called from a receiving loop or coroutine, so return here should allow either continue
-        # processing the recv buffer, or the coroutine proceed
+        # this should have been called from a receiving loop or coroutine,
+        # so return here, and the recv buffer kept being processed,
+        # or the coroutine proceed
         pass
 
     async def _recv_data(self, bufs):
@@ -752,6 +941,7 @@ HBI {self.net_info}, landed code defined something:
                         if not chunk or len(chunk) <= 0:
                             # data expected by buf, and none passed in to this call,
                             # return and expect next call into here
+                            self._resume_recv()
                             return
                         available = len(chunk)
                         needs = len(buf) - pos
@@ -762,6 +952,7 @@ HBI {self.net_info}, landed code defined something:
                             pos = new_pos
                             # all data in this chunk has been exhausted while current buffer not filled yet
                             # return now and expect succeeding data chunks to come later
+                            self._resume_recv()
                             return
                         # got enough or more data in this chunk to filling current buf
                         buf[pos:] = chunk.data(0, needs)
@@ -798,62 +989,59 @@ HBI {self.net_info}, landed code defined something:
 
         return await fut
 
-    async def recv_data(self, bufs):
-        if self._corun_mutex.locked():
-            raise RuntimeError('HBI recv_data should only be used in burst mode')
-        await self._recv_data(bufs)
-
     async def co_recv_data(self, bufs):
-        if not self._corun_mutex.locked():
-            raise RuntimeError('HBI not in corun mode')
+        """
+        Receive a bulk of binary data from remote corun conversation.
+
+        Must in a corun conversation or RuntimeError will raise.
+
+        """
+        if self._co_remote_ack is not None:
+            # in active corun conversation, remote may not have acked suspension
+            # of other sendings, must wait remote's ack before start receiving
+            # for current local conversation.
+            local_co_id = await self._co_remote_ack
+        else:
+            # not in active corun conversation
+            if self._co_local_ack is None or self._co_local_done is None:
+                # nor in passive corun conversation
+                raise RuntimeError('Not in corun conversation!')
+            # in passive corun conversation
+            if self._co_local_done.done():
+                # this actually possible ?
+                raise RuntimeError('Passive corun conversation has ended!')
+            # remote peer won't send out-of-conversion data before co_end,
+            # so it's okay for pipelined receiving for current conversation,
+            # whether ack from local has been put on wire or not.
+
         await self._recv_data(bufs)
 
     async def co_recv_obj(self):
-        if not self._corun_mutex.locked():
-            raise RuntimeError('HBI not in corun mode')
+        """
+        Receive the result of local execution of a piece code sent by remote
+        conversation.
 
-        while True:
-            # continue poll one obj from buffer
-            landed = self._land_one()
-            if landed is None:
-                # no more packet to land
-                break
-            if len(landed) == 1:
-                # this landed packet is not interesting to application layer
-                continue
-            if len(landed) == 3:
-                # a new coro task started during co-run
-                co_task = landed[1]
-                assert not co_task.done(), 'co task done immediately as landed ?!'
-                # TODO: preemptive execution of such a coro task may be necessary if binary data follows,
-                # TODO: but currently this new coro task will be blocked by _corun_mutext,
-                # TODO: until current coro task or co ctx block finishes running.
-                continue
-            assert len(landed) == 2, f'land result is {type(landed).__name__} of {len(landed)} ?!'
-            if len(self._recv_obj_waiters) > 0:
-                # feed previous waiters first
-                obj_waiter = self._recv_obj_waiters.popleft()
-                if obj_waiter.done():
-                    if obj_waiter.cancelled():
-                        logger.warning(f'A landed value discarded as not given to a cancelled co_recv_obj() call.')
-                    elif obj_waiter.exception() is not None:
-                        logger.error(f'A co_recv_obj() call failed before a value landed for it ?!')
-                    else:
-                        logger.error(f'A co_recv_obj() call got result before a value landed for it ?!')
-                else:
-                    if landed[0] is None:
-                        obj_waiter.set_result(landed[1])
-                    else:
-                        obj_waiter.set_exception(landed[0])
-                continue
+        Must in a corun conversation or RuntimeError will raise.
 
-            # all waiters resolved, landed this one to return
-            if landed[0] is None:
-                return landed[1]
-            else:
-                raise landed[0]
+        """
+        if self._co_remote_ack is not None:
+            # in active corun conversation, remote may not have acked suspension
+            # of other sendings, must wait remote's ack before start receiving
+            # for current local conversation.
+            local_co_id = await self._co_remote_ack
+        else:
+            # not in active corun conversation
+            if self._co_local_ack is None or self._co_local_done is None:
+                # nor in passive corun conversation
+                raise RuntimeError('Not in corun conversation!')
+            # in passive corun conversation
+            if self._co_local_done.done():
+                # this actually possible ?
+                raise RuntimeError('Passive corun conversation has ended!')
+            # remote peer won't send out-of-conversion data before co_end,
+            # so it's okay for pipelined receiving for current conversation,
+            # whether ack from local has been put on wire or not.
 
-        # no object from buffer available for now, queue as a waiter, await the future
         fut = self._loop.create_future()
         self._recv_obj_waiters.append(fut)
         self._read_wire()
@@ -886,205 +1074,135 @@ HBI {self.net_info}, landed code defined something:
                     return
                 self._data_sink(chunk)
 
-            # in burst mode, make the incoming data flew as fast as possible
-            if not self._corun_mutex.locked():
-                # try consume all buffered data first
-                while True:
-                    # meanwhile in burst mode, make sure data keep flowing in regarding lwm
-                    if self._recv_water_pos() <= self.low_water_mark_recv:
-                        self._resume_recv()
-                    landed = self._land_one()
-                    if landed is None:
-                        # no more packet to land
-                        break
-                    if len(landed) == 1:
-                        # this landed packet is not interesting to application layer
-                        continue
+            # try consume all landed but pending consumed objects first
+            while self._landed_queue:
+                while self._recv_obj_waiters:
+                    obj_waiter = self._recv_obj_waiters.popleft()
+                    if obj_waiter.done():
+                        assert obj_waiter.cancelled() or obj_waiter.exception is not None, \
+                            'got result already ?!'
+                        # ignore a waiter whether it is cancelled or met other exceptions
+                        continue  # find next waiter to receive the landed value
+                    landed = self._landed_queue.popleft()
                     if len(landed) == 3:
-                        # a new coro task started during landing, stop draining wire, let the coro recv on-demand,
-                        # and let subsequent incoming data to trigger hwm back pressure
-                        return
-                    assert len(landed) == 2, f'land result is {type(landed).__name__} of {len(landed)} ?!'
-                    if landed[0] is not None:
-                        # exception occurred in burst mode
-                        if not self._disconnecting:
-                            # if not disconnecting as handling result, raise for the event loop to handle it
-                            raise landed[0]
-                    elif inspect.isawaitable(landed[1]):
-                        asyncio.ensure_future(landed[1])
-                return
-
-            # currently in corun mode
-            if len(self._recv_obj_waiters) <= 0:
-                logger.debug('Pkt received but NO data waiter on wire during corun ?!')
-                # postpone wire reading, with flow ctrl imposed below
-
-            # first, try landing as many packets as awaited from buffered data
-            while len(self._recv_obj_waiters) > 0:
-                landed = self._land_one()
-                if landed is None:
-                    # no more packet to land
-                    break
-                if len(landed) == 1:
-                    # this landed packet is not interesting to application layer
-                    continue
-                if len(landed) == 3:
-                    # a new coro task started during co-run
-                    co_task = landed[1]
-                    assert not co_task.done(), 'co task done immediately as landed ?!'
-                    # TODO: preemptive execution of such a coro task may be necessary if binary data follows,
-                    # TODO: but currently this new coro task will be blocked by _corun_mutext,
-                    # TODO: until current coro task or co ctx block finishes running.
-                    continue
-                assert len(landed) == 2, f'land result is {type(landed).__name__} of {len(landed)} ?!'
-                obj_waiter = self._recv_obj_waiters.popleft()
-                if obj_waiter.done():
-                    if obj_waiter.cancelled():
-                        logger.warning(f'A landed value discarded as not given to a cancelled co_recv_obj() call.')
-                    elif obj_waiter.exception() is not None:
-                        logger.error(f'A co_recv_obj() call failed before a value landed for it ?!')
+                        co_task = landed[1]
+                        chain_future(co_task, obj_waiter)
                     else:
-                        logger.error(f'A co_recv_obj() call got result before a value landed for it ?!')
-                else:
-                    if landed[0] is None:
-                        if inspect.isawaitable(landed[1]):
-                            # chain the coros etc.
-                            resolve_coro(asyncio.ensure_future(landed[1]), obj_waiter)
-                        else:
+                        assert len(landed) == 2, '?!'
+                        if landed[0] is None:
                             obj_waiter.set_result(landed[1])
-                    else:
-                        obj_waiter.set_exception(landed[0])
-                if not self._corun_mutex.locked():
-                    # switched to burst mode during landing, just settled waiter should be the last one being awaited
-                    assert len(self._recv_obj_waiters) == 0
+                        else:
+                            obj_waiter.set_exception(landed[0])
+                    if not self._landed_queue:
+                        break
+                if not self._recv_obj_waiters:
                     break
 
-            # and if still in corun mode, i.e. not finally switched to burst mode by previous landings
-            if self._corun_mutex.locked():
+            while True:
+                if self._disconnecting:
+                    return
+
                 # ctrl incoming flow regarding hwm/lwm
                 buffered_amount = self._recv_water_pos()
                 if buffered_amount > self.high_water_mark_recv:
                     self._pause_recv()
                 elif buffered_amount <= self.low_water_mark_recv:
                     self._resume_recv()
-                # return now and will be called on subsequent recv demand
-                return
 
-    async def _corun(self, coro):
-        # use send+corun mutex to prevent interference with other sendings or coros
-        with await self._send_mutex, await self._corun_mutex:
-            try:
-                return await coro
-            except Exception as exc:
-                # if coro unexpects this error, treat it as landing error
-                self._handle_landing_error(exc)
+                # land any packet available from wire
+                landed = self._land_one()
+                if landed is None:
+                    # no more packet to land
+                    return
+                if len(landed) == 1:
+                    # this landed packet is not interesting to application layer
+                    continue
+                if len(landed) not in (2, 3):
+                    raise RuntimeError(
+                        f'land result is {type(landed).__name__} of {len(landed)} ?!'
+                    )
 
-    def corun(self, coro):
-        """
-        Run a coroutine within which `co_*()` methods of this hbic can be called.
+                if self._co_remote_ack is None and self._co_local_ack is None:
+                    # ignore landed result if not in active or passive corun conversation
+                    pass
+                else:
+                    # queue landed packet
+                    self._landed_queue.append(landed)
 
-        """
-        assert coro is not None, '?!'
-        return self._loop.create_task(self._corun(coro))
+                    if len(self._landed_queue) >= self.app_queue_size:
+                        # stop reading wire and pause network recv if landing queue becomes big
+                        self._pause_recv()
+                        return
 
-    def run_coro(self, coro):
-        return self._loop.run_until_complete(self._corun(coro))
-
-    async def send_corun(self, code, bufs=None):
-        if self._corun_mutex.locked():
-            # sending mutex is effectively locked in corun mode
-            await self._send_code(code, b'corun')
-            if bufs is not None:
-                await self._send_data(bufs)
-        else:
-            with await self._send_mutex:
-                await self._send_code(code, b'corun')
-                if bufs is not None:
-                    await self._send_data(bufs)
-
-    # implement HBIC as reusable context manager
-
-    def __enter__(self):
-        self.run_until_connected()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is None:
-            err_reason = None
-            err_stack = None
-        else:
-            import traceback
-            err_reason = exc_val if isinstance(exc_val, BaseException) else exc_type(exc_val)
-            err_stack = ''.join(traceback.format_exception(exc_type, exc_val, exc_tb))
-
-        self.disconnect(err_reason, err_stack, try_send_peer_err=True)
-        self.run_until_disconnected(ensure_connected=False)
-
-    # implement HBIC as reusable async context manager
-
-    async def __aenter__(self):
-        await self.wait_connected()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is None:
-            err_reason = None
-            err_stack = None
-        else:
-            import traceback
-            err_reason = exc_val if isinstance(exc_val, BaseException) else exc_type(exc_val)
-            err_stack = ''.join(traceback.format_exception(exc_type, exc_val, exc_tb))
-
-        self.disconnect(err_reason, err_stack, try_send_peer_err=True)
-        await self.wait_disconnected()
+                # try give queue head to a waiter
+                if not self._recv_obj_waiters or not self._landed_queue:
+                    # not possible
+                    continue
+                landed = self._landed_queue.popleft()
+                given_to_a_waiter = False
+                while self._recv_obj_waiters:
+                    obj_waiter = self._recv_obj_waiters.popleft()
+                    if obj_waiter.done():
+                        assert obj_waiter.cancelled() or obj_waiter.exception is not None, \
+                            'got result already ?!'
+                        # ignore a waiter whether it is cancelled or met other exceptions
+                        continue  # find next waiter to receive the landed value
+                    if len(landed) == 3:
+                        co_task = landed[1]
+                        chain_future(co_task, obj_waiter)
+                    else:
+                        assert len(landed) == 2, '?!'
+                        if landed[0] is None:
+                            obj_waiter.set_result(landed[1])
+                        else:
+                            obj_waiter.set_exception(landed[0])
+                    given_to_a_waiter = True
+                    break  # landed value given to a waiter, done for it
+                if not given_to_a_waiter:
+                    # put back to queue head if not consumed by a waiter
+                    self._landed_queue.appendleft(landed)
 
     def co(self):
         """
-        This meant to be used in `async with` as the async context manager to provide a `with` context where `co_*()`
-        methods can be called, without (async) defining a separate coro.
+        Manage local corun conversations as context over this HBI connection
 
         """
         return _CoHBIC(self)
 
 
 class _CoHBIC:
-    __slots__ = ('hbic',)
+    __slots__ = 'hbic', 'co_req', 'co_ack',
 
     def __init__(self, hbic: AbstractHBIC):
         self.hbic = hbic
+        self.co_req = hbic.loop.create_future()
+        self.co_ack = hbic.loop.create_future()
 
     async def __aenter__(self):
-        await self.hbic._send_mutex.acquire(), await self.hbic._corun_mutex.acquire()
-        return self.hbic
+        hbic = self.hbic
+        await hbic._send_mutex.acquire(), await hbic._corun_mutex.acquire()
+        assert hbic._co_remote_ack is None, 'co act not cleaned ?!'
+        co_ack = hbic._co_remote_ack = self.co_ack
+        local_co_id = id(co_ack)
+        await hbic._send_text(repr(local_co_id), b'co_begin')
+        await co_ack
+        return hbic
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        self.hbic._corun_mutex.release()
-        self.hbic._send_mutex.release()
-
-
-def _loop_of_hbics(hbics):
-    loop = None
-    for hbic in hbics:
-        if loop is None:
-            loop = hbic._loop
-        elif loop is not hbic._loop:
-            raise RuntimeError('HBI corun with hbics on different loops is not possible')
-    return loop
-
-
-async def _corun_with(coro, hbics):
-    with contextlib.ExitStack() as stack:
-        # use mutexes of all hbics
-        for hbic in hbics:
-            # use send+corun mutex to prevent interference with other sendings or coros
-            stack.enter_context(await hbic._send_mutex)
-            stack.enter_context(await hbic._corun_mutex)
-        return await coro
-
-
-def corun_with(coro, hbics):
-    return _loop_of_hbics(hbics).create_task(_corun_with(coro, hbics))
-
-
-def run_coro_with(coro, hbics):
-    _loop_of_hbics(hbics).run_until_complete(_corun_with(coro, hbics))
+        hbic = self.hbic
+        co_ack = hbic._co_remote_ack
+        if co_ack is None:
+            # got no chance to lock the mutex, not to release either
+            return
+        assert co_ack is self.co_ack, 'context corrupted ?!'
+        hbic._co_remote_ack = None
+        if hbic._landed_queue:
+            logger.warning(
+                f'Non-empty app queue ({len(hbic._landed_queue)} objects)'
+                f' at end of active conversation.'
+            )
+            hbic._landed_queue.clear()
+        local_co_id = id(co_ack)
+        await hbic._send_text(repr(local_co_id), b'co_end')
+        hbic._corun_mutex.release()
+        hbic._send_mutex.release()

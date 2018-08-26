@@ -59,11 +59,12 @@ class MicroPool:
         return self.proc_hbic.addr
 
     async def proc(self, session: str = None):
+        proc_hbic = self.proc_hbic
         if session == self.session:
             # session not changed, can reuse connection to proc if still alive
-            if self.proc_hbic is not None and self.proc_hbic.connected:
+            if proc_hbic is not None and proc_hbic.connected:
                 # connection to proc still alive, no need to assign new proc
-                return self.proc_hbic
+                return proc_hbic
         else:
             # new session or changed session, mandatory to ask pool master for proc assignment,
             # though not unusual for it to assign same proc the consumer currently connected to
@@ -72,10 +73,9 @@ class MicroPool:
         # request pool master to assign a proc
         await self.pool_hbic.wait_connected()
         async with self.pool_hbic.co() as pool_hbic:
-            await pool_hbic.send_corun(rf'''
+            proc_addr = await pool_hbic.co_get_result(rf'''
 assign_proc({self.session!r})
 ''')
-            proc_addr = await pool_hbic.co_recv_obj()
             proc_cache_key = json.dumps(proc_addr)
             proc_hbic = self.proc_conn_cache.get(proc_cache_key, None)
             if proc_hbic is None:
@@ -107,7 +107,7 @@ class MicroCo:
     """
 
     """
-    __slots__ = ('pool', 'session', 'co',)
+    __slots__ = 'pool', 'session', 'co',
 
     def __init__(self, pool: MicroPool, session: str = None):
         self.pool = pool

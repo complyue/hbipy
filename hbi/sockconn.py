@@ -317,4 +317,4 @@ handlePeerErr({err_reason!r},{err_stack!r})
                     self._wire._bdy_got = 0
                     wire_dir = self._wire._wire_dir
                     self._wire._wire_dir = None
-                    return self.land(payload, wire_dir)
+                    return self._land_(payload, wire_dir)
