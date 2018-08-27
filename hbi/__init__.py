@@ -17,5 +17,5 @@ from .version import version as __version__
 __all__ = [
     '__version__',
 
-    'HBIC', 'MicroPool', 'run_in_context',
+    'HBIC', 'ServiceMaster', 'run_in_context',
 ]

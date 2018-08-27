@@ -1,5 +1,5 @@
 """
-Micro Service Pool Manager
+Service Pool Manager
 
 """
 

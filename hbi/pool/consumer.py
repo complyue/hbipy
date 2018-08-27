@@ -1,7 +1,8 @@
 """
-Micro Service Pool consumer interface
+Service Pool consumer interface
 
 """
+
 import asyncio
 import json
 from concurrent import futures
@@ -10,47 +11,47 @@ from ..log import get_logger
 from ..sockconn import HBIC
 
 __all__ = [
-    'MicroPool',
+    'ServiceMaster',
 ]
 
 logger = get_logger(__name__)
 
 
-class MicroPool:
+class ServiceMaster:
     """
     """
     __slots__ = (
-        'context', 'pool_hbic', 'proc_hbic', 'session',
+        'context', 'master_hbic', 'proc_hbic', 'session',
         'ack_timeout', 'net_opts',
         'proc_conn_cache',
     )
 
     def __init__(
             self,
-            context: dict, pool_addr: dict,
+            context: dict, master_addr: dict,
             *,
             session: str = None,
             net_opts: dict = None, ack_timeout: float = 10.0,
     ):
         self.context = context
-        self.pool_hbic = HBIC(globals(), pool_addr, net_opts)
+        self.master_hbic = HBIC(globals(), master_addr, net_opts)
         self.proc_hbic = None
         self.session = session
         self.ack_timeout = float(ack_timeout)
         self.net_opts = net_opts
         self.proc_conn_cache = {}
 
-        self.pool_hbic.connect()
+        self.master_hbic.connect()
 
     def disconnect(self, err_reason: str = None, err_stack: str = None):
         # todo elaborate error handling here
         for k, c in self.proc_conn_cache.items():
             c.disconnect(err_reason, err_stack)
-        self.pool_hbic.disconnect(err_reason, err_stack)
+        self.master_hbic.disconnect(err_reason, err_stack)
 
     @property
-    def pool_addr(self):
-        return self.pool_hbic.addr
+    def master_addr(self):
+        return self.master_hbic.addr
 
     @property
     def proc_addr(self):
@@ -66,14 +67,14 @@ class MicroPool:
                 # connection to proc still alive, no need to assign new proc
                 return proc_hbic
         else:
-            # new session or changed session, mandatory to ask pool master for proc assignment,
+            # new session or changed session, mandatory to ask service master for proc assignment,
             # though not unusual for it to assign same proc the consumer currently connected to
             self.session = session
 
-        # request pool master to assign a proc
-        await self.pool_hbic.wait_connected()
-        async with self.pool_hbic.co() as pool_hbic:
-            proc_addr = await pool_hbic.co_get_result(rf'''
+        # request service master to assign a proc
+        await self.master_hbic.wait_connected()
+        async with self.master_hbic.co() as master_hbic:
+            proc_addr = await master_hbic.co_get_result(rf'''
 assign_proc({self.session!r})
 ''')
             proc_cache_key = json.dumps(proc_addr)
@@ -92,7 +93,8 @@ assign_proc({self.session!r})
             try:
                 await proc_hbic.wait_connected()
             except Exception:
-                # TODO complain to pool master about unavailability of the proc, retry according to some rules TBD
+                # TODO complain to service master about unavailability of the proc,
+                # retry according to some rules TBD
                 raise
 
             self.proc_hbic = proc_hbic
@@ -100,22 +102,22 @@ assign_proc({self.session!r})
         return self.proc_hbic
 
     def co(self, session: str = None):
-        return MicroCo(self, session)
+        return ServiceCo(self, session)
 
 
-class MicroCo:
+class ServiceCo:
     """
 
     """
-    __slots__ = 'pool', 'session', 'co',
+    __slots__ = 'master', 'session', 'co',
 
-    def __init__(self, pool: MicroPool, session: str = None):
-        self.pool = pool
+    def __init__(self, master: ServiceMaster, session: str = None):
+        self.master = master
         self.session = session
         self.co = None
 
     async def __aenter__(self):
-        proc_hbic = await self.pool.proc(self.session)
+        proc_hbic = await self.master.proc(self.session)
         co = proc_hbic.co()
         hbic = await co.__aenter__()
         self.co = co
@@ -137,7 +139,7 @@ class MicroCo:
         else:
             if exc_type is not None:
                 if issubclass(exc_type, (asyncio.CancelledError, futures.CancelledError)):
-                    err_reason = f'HBI pool consumer cancellation.'
+                    err_reason = f'HBI service consumer cancellation.'
                 else:
-                    err_reason = f'HBI pool consumer error: {exc_type!s} {exc_val!s}'
+                    err_reason = f'HBI service consumer error: {exc_type!s} {exc_val!s}'
                 co.hbic.disconnect(err_reason)

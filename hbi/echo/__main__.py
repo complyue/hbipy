@@ -9,7 +9,7 @@ import sys
 
 import hbi
 from hbi import me
-from hbi.pool import MicroPool
+from hbi.pool import ServiceMaster
 from hbi.pool import pe
 
 from .shell import *
@@ -186,10 +186,10 @@ HBI service pool interactive tact utility, usage:
                 me.addr = {'host': me.host, 'port': me.port}
 
             logger.info(f'Connecting to HBI pool {me.addr}')
-            service_pool = MicroPool(globals(), me.addr, net_opts=me.net_opts)
+            service_master = ServiceMaster(globals(), me.addr, net_opts=me.net_opts)
 
             # bind to a pool proc
-            hbic = await service_pool.proc(session='xxx')
+            hbic = await service_master.proc(session='xxx')
             logger.info(f'Assigned HBI proc {hbic}')
 
             console = HBIConsole(hbic)
@@ -200,7 +200,7 @@ HBI service pool interactive tact utility, usage:
 
             logger.info(f'Done with HBI pool {me.addr}')
             # disconnect from pool
-            service_pool.disconnect()
+            service_master.disconnect()
 
 
         asyncio.get_event_loop().run_until_complete(main())

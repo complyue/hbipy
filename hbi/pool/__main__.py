@@ -125,18 +125,23 @@ def main():
                 me.host = '127.0.0.1'
 
             me.addr = {'host': me.host, 'port': me.port}
-        logger.info(f'Starting HBI service pool ({hot_back}/{pool_size}) with module [{me.modu_name}] on {me.addr}')
+        logger.info(
+            f'Starting HBI service pool ({hot_back}/{pool_size})'
+            f' with module [{me.modu_name}] on {me.addr}'
+        )
         me.loop = asyncio.get_event_loop()
 
         try:
 
-            pe.master = MicroMaster(
+            pe.master = PoolMaster(
                 pool_size, hot_back,
             )
 
             me.server = me.loop.run_until_complete(hbi.HBIC.create_server(
-                lambda: runpy.run_module(f'{__package__}._pmgr.mcp', run_name='__hbi_pool_consumer_peer__'),
-                addr=me.addr, net_opts=me.net_opts, loop=me.loop
+                lambda: runpy.run_module(
+                    f'{__package__}._pmgr.mcp',
+                    run_name='__hbi_pool_consumer_peer__'
+                ), addr=me.addr, net_opts=me.net_opts, loop=me.loop
             ))
 
             runpy.run_module(me.modu_name, run_name='__hbi_serving__')

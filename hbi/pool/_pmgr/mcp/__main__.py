@@ -1,5 +1,5 @@
 """
-Micro service Consumer Peer
+Service Consumer serving endpoint
 
 """
 
@@ -17,7 +17,7 @@ logger = get_logger(__package__)
 
 hbi_peer: hbi.HBIC = None  # will be updated by HBI after module initialization
 
-consumer: MicroConsumer = None
+consumer: ServiceConsumer = None
 
 
 def hbi_connected():
@@ -26,11 +26,11 @@ def hbi_connected():
     logger.debug(f'HBI pool consumer peer {hbi_peer} connected.')
 
     assert consumer is None, 'dirty mcp module ?!'
-    consumer = MicroConsumer(hbi_peer)
+    consumer = ServiceConsumer(hbi_peer)
 
 
 def hbi_boot():
-    hbi_peer.disconnect('You normally connect to HBI pool via hbi.pool.MicroPool()')
+    hbi_peer.disconnect('You normally connect to HBI pool via hbi.pool.ServiceMaster()')
 
 
 async def assign_proc(session: str = None, sticky: Optional[bool] = None):

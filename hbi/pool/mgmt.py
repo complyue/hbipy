@@ -15,7 +15,7 @@ from hbi.log import get_logger
 from hbi.sockconn import HBIC
 
 __all__ = [
-    'MicroMaster', 'MicroWorker', 'MicroConsumer',
+    'PoolMaster', 'ProcWorker', 'ServiceConsumer',
 ]
 
 logger = get_logger(__name__)
@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 PROC_ALIVE_CHECK = 10  # todo expose as config option
 
 
-class MicroConsumer:
+class ServiceConsumer:
     """
     micro service pool consumer
 
@@ -34,10 +34,10 @@ class MicroConsumer:
         self.hbi_peer: HBIC = hbi_peer
         self.session: str = None
         self.sticky: bool = bool(sticky)
-        self.assigned_worker: MicroWorker = None
+        self.assigned_worker: ProcWorker = None
 
 
-class MicroMaster:
+class PoolMaster:
     """
     micro service pool master
 
@@ -86,9 +86,9 @@ class MicroMaster:
 
         self._all_workers.clear()
         for _ in range(min(self.hot_back, self.pool_size)):
-            self._all_workers.add(MicroWorker(self))
+            self._all_workers.add(ProcWorker(self))
 
-        logger.info(f'HBI Micro Service Pool team addr: {self.team_addr}')
+        logger.info(f'HBI Service Pool team addr: {self.team_addr}')
 
     async def _pool_cleanup(self):
         if self._pool_hbis_task is not None:
@@ -127,7 +127,7 @@ class MicroMaster:
         # todo add forceful option to allow termination of active connections
         self._pool_hbis_task.add_done_callback(lambda fut: fut.result().close())
 
-    def register_proc(self, pid, hbi_peer) -> Optional['MicroWorker']:
+    def register_proc(self, pid, hbi_peer) -> Optional['ProcWorker']:
         worker = self._workers_by_pid.get(pid, None)
         if worker is None:
             hbi_peer.disconnect(f'Your pid {pid} is unknown!')
@@ -140,11 +140,11 @@ class MicroMaster:
         worker.last_act_time = time.time()
         return worker
 
-    async def worker_serving(self, worker: 'MicroWorker'):
+    async def worker_serving(self, worker: 'ProcWorker'):
         self._pending_workers.discard(worker)
         self._idle_workers.put_nowait(worker)
 
-    async def assign_proc(self, consumer: MicroConsumer):
+    async def assign_proc(self, consumer: ServiceConsumer):
         # TODO implement load based provisional assignment
 
         # maintain enough hot backing proc workers
@@ -153,7 +153,7 @@ class MicroMaster:
             logger.debug(f'Starting {idle_quota!r} hot backing proc workers given current workers:'
                          f' ({self._idle_workers.qsize()}/{len(self._all_workers)}/{self.pool_size})')
         while idle_quota > 0 and len(self._all_workers) < self.pool_size:
-            self._all_workers.add(MicroWorker(self))
+            self._all_workers.add(ProcWorker(self))
             idle_quota -= 1
 
         # check repeated assignment requests
@@ -179,7 +179,7 @@ class MicroMaster:
         # concurrency/parallelism is offloaded to the proc worker process
         if consumer.sticky and consumer.session is not None:
             sticky_session = consumer.session
-            worker: 'MicroWorker' = self._workers_by_session.get(sticky_session, None)
+            worker: 'ProcWorker' = self._workers_by_session.get(sticky_session, None)
             if worker is not None and worker.check_alive():
                 if worker.last_session == sticky_session:
                     # a sticky session worker is alive, assign it
@@ -201,7 +201,7 @@ class MicroMaster:
         # find an idle worker for this consumer, prefer adhere session
         searched_workers = set()
         while True:
-            worker: MicroWorker = await self._idle_workers.get()
+            worker: ProcWorker = await self._idle_workers.get()
             if not worker.check_alive():
                 # this worker already dead, should have been restarting,
                 # try next idle worker in queue
@@ -242,7 +242,7 @@ class MicroMaster:
 
         return worker.proc_port
 
-    def release_proc(self, consumer: MicroConsumer):
+    def release_proc(self, consumer: ServiceConsumer):
         worker = consumer.assigned_worker
         if worker is None:
             return
@@ -251,7 +251,7 @@ class MicroMaster:
             self._idle_workers.put_nowait(worker)
 
 
-class MicroWorker:
+class ProcWorker:
     """
     micro service pool proc worker, start, kill and restart a subprocess as necessary.
 
@@ -264,7 +264,7 @@ class MicroWorker:
         'last_act_time', 'last_session', 'prepared_session',
     )
 
-    def __init__(self, master: MicroMaster):
+    def __init__(self, master: PoolMaster):
         self.master = master
         self.po = None
         self.hbi_peer: HBIC = None
@@ -279,8 +279,8 @@ class MicroWorker:
 
     def __repr__(self):
         if self.po is None:
-            return 'MicroWorker[unborn]'
-        return f'MicroWorker[{self.po.pid}]'
+            return 'ProcWorker[unborn]'
+        return f'ProcWorker[{self.po.pid}]'
 
     def start_worker_process(self):
         session = self.last_session

@@ -7,15 +7,17 @@ import hbi
 from hbi import me
 from hbi.log import get_logger
 from hbi.pool import pe
-from ..mgmt import MicroWorker
+
+from ..mgmt import ProcWorker
 
 logger = get_logger(__package__)
 
-assert '__hbi_pool_master__' == __name__, 'this only meant to run as the peer of an M3 project worker subprocess!'
+assert '__hbi_pool_master__' == __name__, \
+    'this only meant to run as the peer of an M3 project worker subprocess!'
 
 hbi_peer: hbi.HBIC = None  # will be updated by HBI after module initialization
 
-worker: MicroWorker = None
+worker: ProcWorker = None
 
 # will be bound worker.report_serving() method
 worker_serving = None
