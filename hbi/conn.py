@@ -434,7 +434,7 @@ HBI disconnecting {self.net_info} due to error:
 
         """
         self._loop.call_soon_threadsafe(
-            self.send_notification, code,
+            self.notif, code,
         )
 
     def fire_corun(self, code, bufs=None):
@@ -444,7 +444,7 @@ HBI disconnecting {self.net_info} due to error:
 
         """
         self._loop.call_soon_threadsafe(
-            self.send_notification_corun, code, bufs,
+            self.notif_corun, code, bufs,
         )
 
     def notif(self, code):

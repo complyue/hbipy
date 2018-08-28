@@ -27,7 +27,7 @@ pe.team_addr, = sys.argv[1:]
 
 
 def hbi_connected():
-    hbi_peer.send_notification(rf'''
+    hbi_peer.notif(rf'''
 worker_online({os.getpid()!r})
 ''')
 
@@ -59,7 +59,7 @@ async def serv_hbi_module(me_dict: dict, pe_dict: dict):
         assert callable(hbi_proc_session_changing_to)
         # todo validate that it accepts a single str arg as new session id
 
-    hbi_peer.send_notification(rf'''
+    hbi_peer.notif(rf'''
 worker_serving({me.port!r})
 ''')
 

@@ -31,7 +31,7 @@ def worker_online(pid: int):
 
     worker_serving = worker.report_serving
 
-    hbi_peer.send_notification(rf'''
+    hbi_peer.notif(rf'''
 serv_hbi_module(
     { {k:vars(me)[k] for k in me.__share__} !r},
     { {k:vars(pe)[k] for k in pe.__share__} !r},

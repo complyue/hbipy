@@ -74,7 +74,7 @@ class ServiceMaster:
         # request service master to assign a proc
         await self.master_hbic.wait_connected()
         async with self.master_hbic.co() as master_hbic:
-            proc_addr = await master_hbic.co_get_result(rf'''
+            proc_addr = await master_hbic.co_get(rf'''
 assign_proc({self.session!r})
 ''')
             proc_cache_key = json.dumps(proc_addr)

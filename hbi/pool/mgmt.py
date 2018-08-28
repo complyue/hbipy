@@ -380,7 +380,7 @@ class ProcWorker:
         prepared_session = self.prepared_session = asyncio.get_event_loop().create_future()
         try:
             async with self.hbi_peer.co() as hbi_peer:
-                confirmed_session = await hbi_peer.co_get_result(rf'''
+                confirmed_session = await hbi_peer.co_get(rf'''
 prepare_session({session!r})
 ''')
                 assert confirmed_session == session

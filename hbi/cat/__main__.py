@@ -96,7 +96,7 @@ HBI service pool simple tact utility, usage:
         logger.info(f'Connected with a HBI proc {hbic.addr}')
 
         # sending boot request in burst mode
-        await hbic.send_notification('hbi_boot()')
+        await hbic.notif('hbi_boot()')
 
         # passively wait disconnected by service
         await hbic.wait_disconnected()
