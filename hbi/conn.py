@@ -447,7 +447,7 @@ HBI disconnecting {self.net_info} due to error:
             self.send_notification_corun, code, bufs,
         )
 
-    def send_notification(self, code):
+    def notif(self, code):
         """
         Schedule a piece of plain code to be executed remotely for a notification.
 
@@ -468,7 +468,7 @@ HBI disconnecting {self.net_info} due to error:
 
         return self._loop.create_task(notif_out_sending())
 
-    def send_notification_corun(self, code, bufs=None):
+    def notif_corun(self, code, bufs=None):
         """
         Schedule a piece of corun code to be executed remotely for a notification.
 
@@ -572,7 +572,7 @@ HBI disconnecting {self.net_info} due to error:
 
         await self._send_data(bufs)
 
-    async def co_get_result(self, code):
+    async def co_get(self, code):
         """
         Send a piece of code to be executed remotely, and receive its result
         right back.
