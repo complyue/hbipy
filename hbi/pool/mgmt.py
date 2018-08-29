@@ -83,8 +83,10 @@ class PoolMaster:
             'host': '127.0.0.1', 'port': None,
         }
         self._pool_hbis_task = loop.create_task(HBIC.create_server(
-            lambda: runpy.run_module(f'{__package__}._pmgr.__main__',
-                                     run_name='__hbi_pool_master__'),
+            lambda: runpy.run_module(
+                f'{__package__}._pmgr.__main__',
+                run_name='__hbi_pool_master__'
+            ),
             addr=self.team_addr, loop=loop,
         ))
         loop.create_task(self._pool_cleanup())
@@ -160,8 +162,10 @@ class PoolMaster:
         # maintain enough hot backing proc workers
         idle_quota = self.hot_back - (self._idle_workers.qsize() + len(self._pending_workers))
         if idle_quota > 0:
-            logger.debug(f'Starting {idle_quota!r} hot backing proc workers given current workers:'
-                         f' ({self._idle_workers.qsize()}/{len(self._all_workers)}/{self.pool_size})')
+            logger.debug(
+                f'Starting {idle_quota!r} hot backing proc workers given current workers:'
+                f' ({self._idle_workers.qsize()}/{len(self._all_workers)}/{self.pool_size})'
+            )
         while idle_quota > 0 and len(self._all_workers) < self.pool_size:
             self._all_workers.add(ProcWorker(self))
             idle_quota -= 1
@@ -301,14 +305,13 @@ class ProcWorker:
                 del self.master._workers_by_session[session]
             self.last_session = None
 
-        # pydev debuggers have difficulties figuring out subprocesses to be started with `python -m <modu>` cmdl,
-        # have to use the helper script
+        # pydev debuggers have difficulties figuring out subprocesses to be started with
+        # `python -m <modu>` cmdl, have to use the helper script
         import hbi
         hbi_dir = os.path.dirname(hbi.__file__)
-        hbipy_dir = os.path.dirname(hbi_dir)
         # a proc subprocess should live together with its master process, and killed altogether
         self.po = subprocess.Popen([
-            sys.executable, f'{hbipy_dir}/run-module.py',
+            sys.executable, f'{hbi_dir}/run-module.py',
             f'{__package__}._pmgr.worker', json.dumps(self.master.team_addr)
         ], start_new_session=False, )
         self.hbi_peer = None

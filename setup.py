@@ -1,4 +1,5 @@
-import os
+import glob
+import os.path
 import sys
 
 import setuptools
@@ -24,6 +25,15 @@ if py_version < (3, 6):
 
 packages = ['hbi']
 
+all_files_by_dir = {}
+for f in glob.glob('hbi/**/*.py', recursive=True):
+    d, n = os.path.dirname(f), f  # os.path.basename(f)
+    if d in all_files_by_dir:
+        all_files_by_dir[d].append(n)
+    else:
+        all_files_by_dir[d] = [n]
+data_files = list(all_files_by_dir.items())
+
 setuptools.setup(
     name='hbi',
     version=version,
@@ -34,6 +44,7 @@ setuptools.setup(
     long_description=long_description,
     download_url='https://pypi.python.org/pypi/hbi',
     packages=packages,
+    data_files=data_files,
     extras_require={
     },
     classifiers=[

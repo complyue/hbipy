@@ -16,7 +16,8 @@ if __name__ == '__main__':
 
     try:
         modu_name = sys.argv[1]
-        sys.argv = sys.argv[1:]  # shift off run-module.py, argv[0] will be replaced by module's __main__
+        sys.argv = sys.argv[
+                   1:]  # shift off run-module.py, argv[0] will be replaced by module's __main__
         runpy.run_module(modu_name, run_name=__name__, alter_sys=True)
     except NameError:
         print('sys.path => %r' % sys.path, file=sys.stderr)
