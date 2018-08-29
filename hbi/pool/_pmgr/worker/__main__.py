@@ -3,6 +3,7 @@ HBI pool proc worker subprocess booting module
 
 """
 import asyncio
+import json
 import os
 import runpy
 import sys
@@ -23,7 +24,7 @@ this_process = psutil.Process(os.getpid())
 # modu run from python command line as HBI pool proc worker subprocess
 assert '__main__' == __name__
 assert len(sys.argv) == 2, 'HBI pool proc worker subprocess should be started with <team_addr> !'
-pe.team_addr, = sys.argv[1:]
+pe.team_addr = json.loads(sys.argv[1])
 
 
 def hbi_connected():

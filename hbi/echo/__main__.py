@@ -11,7 +11,6 @@ import hbi
 from hbi import me
 from hbi.pool import ServiceMaster
 from hbi.pool import pe
-
 from .shell import *
 
 logger = logging.getLogger(__package__)

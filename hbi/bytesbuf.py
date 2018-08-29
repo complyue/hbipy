@@ -20,7 +20,11 @@ class BytesBuffer:
         return len(self.bytes_) - self.offset
 
     def find(self, sub, start=None, end=None):
-        ret = self.bytes_.find(sub, self.offset + (start or 0), (self.offset + end) if end else None)
+        ret = self.bytes_.find(
+            sub,
+            self.offset + (start or 0),
+            (self.offset + end) if end else None
+        )
         if ret > 0:
             return ret - self.offset
         return ret
@@ -30,4 +34,6 @@ class BytesBuffer:
         return self
 
     def data(self, start=0, end=None):
-        return memoryview(self.bytes_)[self.offset + (start or 0): (self.offset + end) if end else None]
+        return memoryview(
+            self.bytes_
+        )[self.offset + (start or 0): (self.offset + end) if end else None]

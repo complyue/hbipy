@@ -41,8 +41,10 @@ def hwdsz(sz):
     # expect str representation of number, optionally plus a known unit
     sz = str(sz)
     m = re.match((
-        r'\s*([0-9]+(\.[0-9]*)?)'  # numeric part, group 1 and 2
-        r'(\s*(BYTES?|Bytes?|bytes?|B|b|KB|kb|K|k|MB|mb|M|m|GB|gb|G|g|TB|tb|T|t)\s*)?'  # unit part, group 3 and 4
+        # numeric part, group 1 and 2
+        r'\s*([0-9]+(\.[0-9]*)?)'
+        # unit part, group 3 and 4
+        r'(\s*(BYTES?|Bytes?|bytes?|B|b|KB|kb|K|k|MB|mb|M|m|GB|gb|G|g|TB|tb|T|t)\s*)?'
     ), sz)
     if m is None:
         raise TypeError(f'Invalid data size: {sz!r}')

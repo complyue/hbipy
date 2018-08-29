@@ -10,7 +10,6 @@ import socket
 import sys
 
 import hbi
-
 from . import me
 
 __all__ = ()

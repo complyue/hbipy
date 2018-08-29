@@ -38,7 +38,9 @@ class SocketProtocol(asyncio.Protocol):
         self._wire_dir = None
 
     def connection_made(self, transport):
-        transport.set_write_buffer_limits(self.hbic.high_water_mark_send, self.hbic.low_water_mark_send)
+        transport.set_write_buffer_limits(
+            self.hbic.high_water_mark_send, self.hbic.low_water_mark_send
+        )
 
         self.transport = transport
 
@@ -101,7 +103,8 @@ class HBIC(AbstractHBIC):
                 addr_family = net_opts.get('family', addr_family)
             return loop.create_server(
                 lambda: SocketProtocol(cls(context_factory(), loop=loop, **kwargs)),
-                host=addr.get('host', None), port=addr['port'], **(net_opts or {}), family=addr_family, **kwargs
+                host=addr.get('host', None), port=addr['port'], **(net_opts or {}),
+                family=addr_family, **kwargs
             )
 
     def get_remote_host(self):
@@ -145,7 +148,8 @@ class HBIC(AbstractHBIC):
         assert self.addr, 'no addr has been specified ?!'
 
         if self._wire is not None:
-            raise asyncio.InvalidStateError('requesting new connection with transport already wired')
+            raise asyncio.InvalidStateError(
+                'requesting new connection with transport already wired')
 
         wire_fut = self._wire_fut
         if wire_fut is None or wire_fut.done():

@@ -20,4 +20,5 @@ def log_and_ignore(signum, frame):
 
 
 def handle_signals():
-    signal.signal(signal.SIGPIPE, log_and_ignore)
+    if hasattr(signal, 'SIGPIPE'):
+        signal.signal(signal.SIGPIPE, log_and_ignore)

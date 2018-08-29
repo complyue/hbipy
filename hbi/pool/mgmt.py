@@ -1,11 +1,11 @@
 import asyncio
+import json
 import os
 import os.path
 import runpy
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 import traceback
 from math import nan
@@ -45,7 +45,8 @@ class PoolMaster:
 
     __slots__ = (
         'pool_size', 'hot_back', 'ack_timeout',
-        'team_addr', '_pool_hbis_task', '_all_workers', '_pending_workers', '_idle_workers', '_workers_by_pid',
+        'team_addr', '_pool_hbis_task', '_all_workers', '_pending_workers', '_idle_workers',
+        '_workers_by_pid',
         '_workers_by_session',
     )
 
@@ -77,18 +78,27 @@ class PoolMaster:
         if loop is None:
             loop = asyncio.get_event_loop()
 
-        self.team_addr = f'{tempfile.mkdtemp()}/micropool.sock'
+        self.team_addr = {
+            # let os assign arbitrary port on loopback interface
+            'host': '127.0.0.1', 'port': None,
+        }
         self._pool_hbis_task = loop.create_task(HBIC.create_server(
-            lambda: runpy.run_module(f'{__package__}._pmgr.__main__', run_name='__hbi_pool_master__'),
+            lambda: runpy.run_module(f'{__package__}._pmgr.__main__',
+                                     run_name='__hbi_pool_master__'),
             addr=self.team_addr, loop=loop,
         ))
         loop.create_task(self._pool_cleanup())
 
-        self._all_workers.clear()
-        for _ in range(min(self.hot_back, self.pool_size)):
-            self._all_workers.add(ProcWorker(self))
+        def got_team_port(fut):
+            server = fut.result()
+            self.team_addr['port'] = server.sockets[0].getsockname()[1]
+            logger.info(f'HBI Service Pool team addr: {self.team_addr}')
 
-        logger.info(f'HBI Service Pool team addr: {self.team_addr}')
+            self._all_workers.clear()
+            for _ in range(min(self.hot_back, self.pool_size)):
+                self._all_workers.add(ProcWorker(self))
+
+        self._pool_hbis_task.add_done_callback(got_team_port)
 
     async def _pool_cleanup(self):
         if self._pool_hbis_task is not None:
@@ -163,7 +173,8 @@ class PoolMaster:
             if worker.last_session != consumer.session:
                 # consumer changed session
                 if consumer.session is not None and consumer.sticky:
-                    raise RuntimeError(f'{consumer} requested sticky session but changed session itself ?!')
+                    raise RuntimeError(
+                        f'{consumer} requested sticky session but changed session itself ?!')
                 # prepare for new session if changed
                 if worker.last_session is not None:
                     if self._workers_by_session.get(worker.last_session, None) is worker:
@@ -295,11 +306,11 @@ class ProcWorker:
         import hbi
         hbi_dir = os.path.dirname(hbi.__file__)
         hbipy_dir = os.path.dirname(hbi_dir)
-        self.po = subprocess.Popen(
-            [sys.executable, f'{hbipy_dir}/run-module.py', f'{__package__}._pmgr.worker', self.master.team_addr],
-            # a proc subprocess should live together with its master process, and killed altogether
-            start_new_session=False,
-        )
+        # a proc subprocess should live together with its master process, and killed altogether
+        self.po = subprocess.Popen([
+            sys.executable, f'{hbipy_dir}/run-module.py',
+            f'{__package__}._pmgr.worker', json.dumps(self.master.team_addr)
+        ], start_new_session=False, )
         self.hbi_peer = None
         self.proc_port = None
         self.load = nan
@@ -320,7 +331,8 @@ class ProcWorker:
                 # the disconnection along would make the worker process terminate
                 hbi_peer.disconnect(err_reason)
             except Exception:
-                logger.warning(f'Failed disconnecting proc worker for reason {err_reason!s}', exc_info=True)
+                logger.warning(f'Failed disconnecting proc worker for reason {err_reason!s}',
+                               exc_info=True)
 
         if self.po is None:
             logger.warning('Restarting proc worker without ever started ?!')
@@ -361,7 +373,8 @@ class ProcWorker:
                 self.hbi_peer.fire('ping()')
                 return True
             except Exception:
-                logger.error(f'Connection to proc with pid {self.po.pid} seems dead.', exc_info=True)
+                logger.error(f'Connection to proc with pid {self.po.pid} seems dead.',
+                             exc_info=True)
 
         logger.warning(f'Killing zombie proc with pid {self.po.pid} ...')
         try:
