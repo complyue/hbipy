@@ -9,9 +9,7 @@ from .bytesbuf import *
 from .context import run_in_context
 from .sendctrl import SendCtrl
 
-__all__ = [
-    'AbstractHBIC',
-]
+__all__ = ["AbstractHBIC"]
 
 logger = logging.getLogger(__name__)
 
@@ -64,15 +62,15 @@ class AbstractHBIC:
         # it's a memoryview now
         if boc.nbytes == 0:  # if zero-length, replace with empty bytes
             # coz when a zero length ndarray is viewed, cast/send will raise while not needed at all
-            return b''
+            return b""
         elif boc.itemsize != 1:
-            return boc.cast('B')
+            return boc.cast("B")
         return boc
 
     @staticmethod
     def cast_to_tgt_buffer(boc):
         if isinstance(boc, bytes):
-            raise TypeError('bytes can not be target buffer since readonly')
+            raise TypeError("bytes can not be target buffer since readonly")
         if isinstance(boc, bytearray):
             # it's a bytearray
             return boc
@@ -83,46 +81,59 @@ class AbstractHBIC:
                 return None
         # it's a memoryview now
         if boc.readonly:
-            raise TypeError('readonly memoryview can not be target buffer')
+            raise TypeError("readonly memoryview can not be target buffer")
         if boc.nbytes == 0:  # if zero-length, replace with empty bytes
             # coz when a zero length ndarray is viewed, cast/send will raise while not needed at all
-            return b''
+            return b""
         elif boc.itemsize != 1:
-            return boc.cast('B')
+            return boc.cast("B")
         return boc
 
     __slots__ = (
-        'context',
-        'addr', 'net_opts',
-        'send_only',
-        '_disconnecting',
-
-        '_loop',
-        '_wire_fut', '_wire', '_wire_ctx', '_data_sink', '_conn_fut', '_disc_fut',
-
-        'low_water_mark_send', 'high_water_mark_send', '_send_mutex',
-
-        '_recv_buffer', 'app_queue_size',
-        'low_water_mark_recv', 'high_water_mark_recv',
-        '_landed_queue', '_recv_obj_waiters',
-
-        '_corun_mutex', '_co_remote_ack',
-        '_co_local_ack', '_co_local_done',
+        "context",
+        "addr",
+        "net_opts",
+        "send_only",
+        "_disconnecting",
+        "_loop",
+        "_wire_fut",
+        "_wire",
+        "_wire_ctx",
+        "_data_sink",
+        "_conn_fut",
+        "_disc_fut",
+        "low_water_mark_send",
+        "high_water_mark_send",
+        "_send_mutex",
+        "_recv_buffer",
+        "app_queue_size",
+        "low_water_mark_recv",
+        "high_water_mark_recv",
+        "_landed_queue",
+        "_recv_obj_waiters",
+        "_corun_mutex",
+        "_co_remote_ack",
+        "_co_local_ack",
+        "_co_local_done",
     )
 
     def __init__(
-            self,
-            context,
-            addr=None, net_opts=None,
-            *,
-            send_only=False, app_queue_size: int = 500,
-            low_water_mark_send=6 * 1024 * 1024, high_water_mark_send=20 * 1024 * 1024,
-            low_water_mark_recv=6 * 1024 * 1024, high_water_mark_recv=20 * 1024 * 1024,
-            loop=None,
-            **kwargs
+        self,
+        context,
+        addr=None,
+        net_opts=None,
+        *,
+        send_only=False,
+        app_queue_size: int = 500,
+        low_water_mark_send=6 * 1024 * 1024,
+        high_water_mark_send=20 * 1024 * 1024,
+        low_water_mark_recv=6 * 1024 * 1024,
+        high_water_mark_recv=20 * 1024 * 1024,
+        loop=None,
+        **kwargs,
     ):
         super().__init__(**kwargs)
-        context['hbi_peer'] = self
+        context["hbi_peer"] = self
         self.context = context
         self.addr = addr
         self.net_opts = net_opts
@@ -156,15 +167,16 @@ class AbstractHBIC:
         self._co_local_done = None
 
     def __str__(self):
-        return f'HBI:{self.net_info}'
+        return f"HBI:{self.net_info}"
 
     def __repr__(self):
         return repr(str(self))
 
     def _handle_wire_error(self, exc):
         import traceback
+
         traceback.print_exc()
-        logger.fatal(f'HBI {self.net_info} wire error occurred, forcing disconnection.')
+        logger.fatal(f"HBI {self.net_info} wire error occurred, forcing disconnection.")
         err_stack = traceback.format_exc()
 
         self._cut_wire(exc, err_stack)
@@ -174,7 +186,7 @@ class AbstractHBIC:
 
             # if the HBI module declared an error handler, let it try handle the error first.
             # the handler returns True to indicate that this error should be tolerated i.e. ignored.
-            modu_err_handler = self.context.get('hbi_handle_err', None)
+            modu_err_handler = self.context.get("hbi_handle_err", None)
             if modu_err_handler is not None:
                 if True is modu_err_handler(exc):
                     # HBI module claimed successful handling of this error
@@ -190,14 +202,17 @@ class AbstractHBIC:
             pass
 
         import traceback
+
         traceback.print_exc()
-        logger.fatal(f'HBI {self.net_info} landing error occurred, forcing disconnection.')
+        logger.fatal(
+            f"HBI {self.net_info} landing error occurred, forcing disconnection."
+        )
         err_stack = traceback.format_exc()
         self.disconnect(exc, err_stack, True)
 
     def _handle_peer_error(self, message, stack=None):
         try:
-            modu_err_handler = self.context.get('hbi_handle_peer_err', None)
+            modu_err_handler = self.context.get("hbi_handle_peer_err", None)
             if modu_err_handler is not None:
                 if True is modu_err_handler(message, stack):
                     # HBI module claimed successful handling of this error
@@ -205,7 +220,7 @@ class AbstractHBIC:
 
             if self._recv_obj_waiters:
                 # propagate peer error to co-receivers
-                exc = RuntimeError(f'HBI peer error: {message!s}')
+                exc = RuntimeError(f"HBI peer error: {message!s}")
                 waiters = self._recv_obj_waiters
                 self._recv_obj_waiters = deque()
                 for waiter in waiters:
@@ -216,10 +231,11 @@ class AbstractHBIC:
 
         except Exception:
             import traceback
-            traceback.print_exc()
-            logger.fatal(f'HBI {self.net_info} error occurred in handling peer error.')
 
-        self.disconnect(f'Peer error: {message}', stack, False)
+            traceback.print_exc()
+            logger.fatal(f"HBI {self.net_info} error occurred in handling peer error.")
+
+        self.disconnect(f"Peer error: {message}", stack, False)
 
     @property
     def loop(self):
@@ -233,8 +249,8 @@ class AbstractHBIC:
     def net_info(self):
         _wire = self._wire
         if not _wire:
-            return '<unwired>'
-        return f'[{_wire}]'
+            return "<unwired>"
+        return f"[{_wire}]"
 
     def run_until_disconnected(self, ensure_connected=True):
         if not self.connected:
@@ -253,36 +269,43 @@ class AbstractHBIC:
 
     def disconnect(self, err_reason=None, err_stack=None, try_send_peer_err=True):
         if self._disconnecting:
-            logger.debug(f'Repeating disconnection request ignored. err_reason: {err_reason!s}')
+            logger.debug(
+                f"Repeating disconnection request ignored. err_reason: {err_reason!s}"
+            )
             return
         self._disconnecting = True
 
         if err_reason is not None:
             if err_stack is None and isinstance(err_reason, BaseException):
                 import traceback
+
                 err_stack = traceback.format_exc()
 
-            logger.error(rf'''
+            logger.error(
+                rf"""
 HBI disconnecting {self.net_info} due to error:
  ---
 {err_reason}
  ---
 {err_stack or '<no-stack>'}
- ===''', stack_info=True)
+ ===""",
+                stack_info=True,
+            )
 
-        disconn_cb = self.context.get('hbi_disconnecting', None)
+        disconn_cb = self.context.get("hbi_disconnecting", None)
         if disconn_cb is not None:
             maybe_coro = disconn_cb(err_reason)
             if inspect.isawaitable(maybe_coro):
                 asyncio.ensure_future(maybe_coro)
 
         if self._loop.is_closed():
-            logger.warning('HBI disconnection bypassed since loop already closed.')
+            logger.warning("HBI disconnection bypassed since loop already closed.")
             return
 
         # this can be called from any thread
         self._loop.call_soon_threadsafe(
-            self._loop.create_task, self._disconnect(err_reason, err_stack, try_send_peer_err)
+            self._loop.create_task,
+            self._disconnect(err_reason, err_stack, try_send_peer_err),
         )
 
     async def wait_disconnected(self):
@@ -294,22 +317,22 @@ HBI disconnecting {self.net_info} due to error:
         await self._disc_fut
 
     def _cut_wire(self, err_reason=None, err_stack=None):
-        raise NotImplementedError('subclass should implement this')
+        raise NotImplementedError("subclass should implement this")
 
     def _disconnect(self, err_reason=None, err_stack=None, try_send_peer_err=True):
-        raise NotImplementedError('subclass should implement this as a coroutine')
+        raise NotImplementedError("subclass should implement this as a coroutine")
 
     def _disconnected(self, exc=None):
         self._disconnecting = False
 
         if exc is not None:
-            logger.warning(f'HBI connection unwired due to error: {exc}')
+            logger.warning(f"HBI connection unwired due to error: {exc}")
 
         # abort pending tasks
         self._recv_buffer = None
         if self._recv_obj_waiters:
             if not exc:
-                exc = RuntimeError('HBI disconnected')
+                exc = RuntimeError("HBI disconnected")
             waiters = self._recv_obj_waiters
             self._recv_obj_waiters = deque()
             for waiter in waiters:
@@ -326,40 +349,38 @@ HBI disconnecting {self.net_info} due to error:
             if not fut.done():
                 fut.set_result(self)
 
-        disconn_cb = self.context.get('hbi_disconnected', None)
+        disconn_cb = self.context.get("hbi_disconnected", None)
         if disconn_cb is not None:
             maybe_coro = disconn_cb(exc)
             if inspect.isawaitable(maybe_coro):
                 asyncio.ensure_future(maybe_coro)
 
     def _peer_eof(self):
-        peer_done_cb = self.context.get('hbi_peer_done', None)
+        peer_done_cb = self.context.get("hbi_peer_done", None)
         if peer_done_cb is not None:
             return peer_done_cb()
 
     def _connect(self):
-        raise NotImplementedError('subclass should implement this as a coroutine')
+        raise NotImplementedError("subclass should implement this as a coroutine")
 
     def connect(self, addr=None, net_opts=None):
         self._disconnecting = False
 
         if self.connected:
-            if (
-                    addr is None or addr == self.addr
-            ) and (
-                    net_opts is None or net_opts == self.net_opts
+            if (addr is None or addr == self.addr) and (
+                net_opts is None or net_opts == self.net_opts
             ):
                 # already connected as expected
                 return
             raise asyncio.InvalidStateError(
-                'already connected to different addr, disconnect before connect to else where'
+                "already connected to different addr, disconnect before connect to else where"
             )
         if addr is not None:
             self.addr = addr
         if net_opts is not None:
             self.net_opts = None
         if not self.addr:
-            raise asyncio.InvalidStateError('attempt connecting without addr')
+            raise asyncio.InvalidStateError("attempt connecting without addr")
 
         # this can be called from any thread
         self._loop.call_soon_threadsafe(self._loop.create_task, self._connect())
@@ -375,7 +396,7 @@ HBI disconnecting {self.net_info} due to error:
             if not fut.done():
                 fut.set_result(self)
 
-        conn_cb = self.context.get('hbi_connected', None)
+        conn_cb = self.context.get("hbi_connected", None)
         if conn_cb is not None:
             maybe_coro = conn_cb()
             if inspect.isawaitable(maybe_coro):
@@ -409,8 +430,11 @@ HBI disconnecting {self.net_info} due to error:
             err_stack = None
         else:
             import traceback
-            err_reason = exc_val if isinstance(exc_val, BaseException) else exc_type(exc_val)
-            err_stack = ''.join(traceback.format_exception(exc_type, exc_val, exc_tb))
+
+            err_reason = (
+                exc_val if isinstance(exc_val, BaseException) else exc_type(exc_val)
+            )
+            err_stack = "".join(traceback.format_exception(exc_type, exc_val, exc_tb))
 
         self.disconnect(err_reason, err_stack, try_send_peer_err=True)
         await self.wait_disconnected()
@@ -422,10 +446,10 @@ HBI disconnecting {self.net_info} due to error:
 
         """
         if self._co_remote_ack is not None:
-            assert self._corun_mutex.locked(), '?!'
+            assert self._corun_mutex.locked(), "?!"
             return True
         else:
-            assert not self._corun_mutex.locked(), '?!'
+            assert not self._corun_mutex.locked(), "?!"
             return False
 
     def fire(self, code):
@@ -433,9 +457,7 @@ HBI disconnecting {self.net_info} due to error:
         Fire a piece of plain code for remote execution and forget about it.
 
         """
-        self._loop.call_soon_threadsafe(
-            self.notif, code,
-        )
+        self._loop.call_soon_threadsafe(self.notif, code)
 
     def fire_corun(self, code, bufs=None):
         """
@@ -443,9 +465,7 @@ HBI disconnecting {self.net_info} due to error:
         and forget about it.
 
         """
-        self._loop.call_soon_threadsafe(
-            self.notif_corun, code, bufs,
-        )
+        self._loop.call_soon_threadsafe(self.notif_corun, code, bufs)
 
     def notif(self, code):
         """
@@ -485,7 +505,7 @@ HBI disconnecting {self.net_info} due to error:
 
         async def notif_corun_out_sending():
             async with self.co():
-                await self._send_code(code, b'corun')
+                await self._send_code(code, b"corun")
                 if bufs is not None:
                     await self._send_data(bufs)
 
@@ -512,12 +532,12 @@ HBI disconnecting {self.net_info} due to error:
             # not in active corun conversation
             if self._co_local_ack is None:
                 # nor in passive corun conversation
-                raise RuntimeError('Not in corun conversation!')
+                raise RuntimeError("Not in corun conversation!")
             # in passive corun conversation
             # must wait until co_ack has been put on wire
             remote_co_id = await self._co_local_ack
 
-        await self._send_code(code, b'corun')
+        await self._send_code(code, b"corun")
 
     async def co_send_code(self, code):
         """
@@ -540,7 +560,7 @@ HBI disconnecting {self.net_info} due to error:
             # not in active corun conversation
             if self._co_local_ack is None:
                 # nor in passive corun conversation
-                raise RuntimeError('Not in corun conversation!')
+                raise RuntimeError("Not in corun conversation!")
             # in passive corun conversation
             # must wait until co_ack has been put on wire
             remote_co_id = await self._co_local_ack
@@ -565,7 +585,7 @@ HBI disconnecting {self.net_info} due to error:
             # not in active corun conversation
             if self._co_local_ack is None:
                 # nor in passive corun conversation
-                raise RuntimeError('Not in corun conversation!')
+                raise RuntimeError("Not in corun conversation!")
             # in passive corun conversation
             # must wait until co_ack has been put on wire
             remote_co_id = await self._co_local_ack
@@ -589,25 +609,25 @@ HBI disconnecting {self.net_info} due to error:
             # not in active corun conversation
             if self._co_local_ack is None:
                 # nor in passive corun conversation
-                raise RuntimeError('Not in corun conversation!')
+                raise RuntimeError("Not in corun conversation!")
             # in passive corun conversation
             # must wait until co_ack has been put on wire
             remote_co_id = await self._co_local_ack
 
-        await self._send_code(code, b'coget')
+        await self._send_code(code, b"coget")
         result = await self.co_recv_obj()
         return result
 
     async def _send_code(self, code, wire_dir=None):
         if not self.connected:
-            raise RuntimeError('HBI wire not connected')
+            raise RuntimeError("HBI wire not connected")
 
         # convert wire_dir as early as possible, will save conversions in case
         # the code is of complex structure
         if wire_dir is None:
-            wire_dir = b''
+            wire_dir = b""
         elif not isinstance(wire_dir, (bytes, bytearray)):
-            wire_dir = str(wire_dir).encode('utf-8')
+            wire_dir = str(wire_dir).encode("utf-8")
 
         # use a generator function to pull code from hierarchy
         def pull_code(container):
@@ -629,7 +649,9 @@ HBI disconnecting {self.net_info} due to error:
         # use a generator function to pull all buffers from hierarchy
 
         def pull_from(boc):
-            b = self.cast_to_src_buffer(boc)  # this static method can be overridden by subclass
+            b = self.cast_to_src_buffer(
+                boc
+            )  # this static method can be overridden by subclass
             if b is not None:
                 yield b
                 return
@@ -641,13 +663,15 @@ HBI disconnecting {self.net_info} due to error:
             remain_size = len(buf)
             send_from_idx = 0
             while remain_size > max_chunk_size:
-                await self._send_buffer(buf[send_from_idx: send_from_idx + max_chunk_size])
+                await self._send_buffer(
+                    buf[send_from_idx : send_from_idx + max_chunk_size]
+                )
                 send_from_idx += max_chunk_size
                 remain_size -= max_chunk_size
             if remain_size > 0:
                 await self._send_buffer(buf[send_from_idx:])
 
-    async def _send_text(self, code, wire_dir=b''):
+    async def _send_text(self, code, wire_dir=b""):
         raise NotImplementedError
 
     async def _send_buffer(self, buf):
@@ -682,7 +706,7 @@ HBI disconnecting {self.net_info} due to error:
             # not in active corun conversation
             if self._co_local_ack is None:
                 # nor in passive corun conversation
-                raise RuntimeError('coget out of corun conversation!')
+                raise RuntimeError("coget out of corun conversation!")
             # in passive corun conversation
             # wait until co_ack has been put on wire
             remote_co_id = await self._co_local_ack
@@ -701,14 +725,17 @@ HBI disconnecting {self.net_info} due to error:
             await self._send_code(repr(result))
 
         except Exception as exc:
-            logger.error(rf'''
+            logger.error(
+                rf"""
 HBI {self.net_info}, error co-getting for remote conversation {remote_co_id}:
 --CODE--
 {code!s}
 --DEFS--
 {defs!r}
 --====--
-''', exc_info=True)
+""",
+                exc_info=True,
+            )
             # try handle the error by hbic class
             self._handle_landing_error(exc)
 
@@ -722,7 +749,7 @@ HBI {self.net_info}, error co-getting for remote conversation {remote_co_id}:
             # not in active corun conversation
             if self._co_local_ack is None:
                 # nor in passive corun conversation
-                raise RuntimeError('coget out of corun conversation!')
+                raise RuntimeError("coget out of corun conversation!")
             # in passive corun conversation
             # wait until co_ack has been put on wire
             remote_co_id = await self._co_local_ack
@@ -736,38 +763,41 @@ HBI {self.net_info}, error co-getting for remote conversation {remote_co_id}:
                 await maybe_coro
 
         except Exception as exc:
-            logger.error(rf'''
+            logger.error(
+                rf"""
 HBI {self.net_info}, error co-getting for remote conversation {remote_co_id}:
 --CODE--
 {code!s}
 --DEFS--
 {defs!r}
 --====--
-''', exc_info=True)
+""",
+                exc_info=True,
+            )
             # try handle the error by hbic class
             self._handle_landing_error(exc)
 
     async def _co_helper(self, remote_co_id):
         local_ack, local_done = self._co_local_ack, self._co_local_done
-        assert local_ack is not None and not local_ack.done(), '?!'
+        assert local_ack is not None and not local_ack.done(), "?!"
         async with self._send_mutex:
             # prevent other sending since the co_ack sent to remote
             # until remote closed corun conversation by sending co_end,
             # which will trigger local_done, then this coro finish
-            await self._send_text(repr(remote_co_id), b'co_ack')
+            await self._send_text(repr(remote_co_id), b"co_ack")
             local_ack.set_result(remote_co_id)
             done_co_id = await local_done
-            assert done_co_id == remote_co_id, '?!'
+            assert done_co_id == remote_co_id, "?!"
 
     def _land_(self, code, wire_dir) -> Optional[tuple]:
         # Semantic of return value from this function is same as _land_one()
 
         # process non-customizable wire directives first
-        if 'co_begin' == wire_dir:
+        if "co_begin" == wire_dir:
 
             if self._co_local_ack is not None:
-                self.disconnect('Unclean co_begin!')
-                return None,
+                self.disconnect("Unclean co_begin!")
+                return (None,)
             remote_co_id = eval(code)
             self._co_local_ack = self._loop.create_future()
             self._co_local_done = self._loop.create_future()
@@ -775,104 +805,110 @@ HBI {self.net_info}, error co-getting for remote conversation {remote_co_id}:
             # conversation, so no extra object/data except those requested by
             # that conversation can be sent to remote peer before it ends.
             self._loop.create_task(self._co_helper(remote_co_id))
-            return None,
+            return (None,)
 
-        elif 'co_end' == wire_dir:
+        elif "co_end" == wire_dir:
 
             remote_co_id = eval(code)
             local_ack, local_done = self._co_local_ack, self._co_local_done
             if local_ack is None or local_done is None:
-                self.disconnect('Uninitialized co_end!')
-                return None,
-            assert not local_done.done(), 'done already ?! extra co_end ?!'
+                self.disconnect("Uninitialized co_end!")
+                return (None,)
+            assert not local_done.done(), "done already ?! extra co_end ?!"
 
             def local_co_end(fut):
                 assert fut is local_ack
                 if local_ack.result() != remote_co_id:
-                    self.disconnect('Mismatch co_end!')
+                    self.disconnect("Mismatch co_end!")
                 else:
                     local_done.set_result(remote_co_id)
                     self._co_local_ack, self._co_local_done = None, None
                     if self._landed_queue:
                         logger.warning(
-                            f'Non-empty app queue ({len(self._landed_queue)} objects)'
-                            f' at end of passive conversation.'
+                            f"Non-empty app queue ({len(self._landed_queue)} objects)"
+                            f" at end of passive conversation."
                         )
                         self._landed_queue.clear()
 
             local_ack.add_done_callback(local_co_end)
             # use a done callback so racing condition is no problem
-            return None,
+            return (None,)
 
-        elif 'co_ack' == wire_dir:
+        elif "co_ack" == wire_dir:
 
             remote_ack = self._co_remote_ack
             if remote_ack is None or remote_ack.done():
-                self.disconnect('Unexpected co_ack!')
-                return None,
+                self.disconnect("Unexpected co_ack!")
+                return (None,)
             received_co_id = eval(code)
-            assert received_co_id == id(self._co_remote_ack), 'co id mismatch ?!'
+            assert received_co_id == id(self._co_remote_ack), "co id mismatch ?!"
             remote_ack.set_result(received_co_id)
-            return None,
+            return (None,)
 
-        elif 'coget' == wire_dir:
+        elif "coget" == wire_dir:
             # single request/response, rpc style
 
             coro = self._coget_helper(code)
             co_task = self._loop.create_task(coro)
-            return None,  # don't make available to application
+            return (None,)  # don't make available to application
 
-        elif 'corun' == wire_dir:
+        elif "corun" == wire_dir:
             # flex code/data streaming, pipeline style
 
             coro = self._corun_helper(code)
             co_task = self._loop.create_task(coro)
-            return None,  # don't make available to application
+            return (None,)  # don't make available to application
 
-        elif 'wire' == wire_dir:
+        elif "wire" == wire_dir:
             # got wire affair packet, land it
 
             if self._wire_ctx is None:  # populate this wire's ctx jit
                 self._wire_ctx = {attr: getattr(self, attr) for attr in dir(self)}
 
                 # universal functions for HBI peers in different languages
-                self._wire_ctx['handlePeerErr'] = self._handle_peer_error
+                self._wire_ctx["handlePeerErr"] = self._handle_peer_error
 
             defs = {}
             try:
                 affair = run_in_context(code, self._wire_ctx, defs)
-                return affair,  # not giving affair to application layer
+                return (affair,)  # not giving affair to application layer
             except Exception as exc:
-                logger.debug(rf'''
+                logger.debug(
+                    rf"""
 HBI {self.net_info}, error landing wire code:
 --CODE--
 {code!s}
 --DEFS--
 {defs!r}
 --====--
-''', exc_info=True)
+""",
+                    exc_info=True,
+                )
                 self._handle_wire_error(exc)
                 # treat wire error as void protocol affair, giving NO value to application layer
-                return None,
+                return (None,)
 
                 # allow customization of code landing
-        lander = self.context.get('__hbi_land__', None)
+        lander = self.context.get("__hbi_land__", None)
         if lander is not None:
-            assert callable(lander), 'non-callable __hbi_land__ defined ?!'
+            assert callable(lander), "non-callable __hbi_land__ defined ?!"
             try:
                 landed = lander(code, wire_dir)
                 if NotImplemented is not landed:
                     # custom lander can return `NotImplemented` to proceed standard landing
                     return None, landed
             except Exception as exc:
-                logger.debug(rf'''
+                logger.debug(
+                    rf"""
 HBI {self.net_info}, error custom landing code:
 --CODE--
 {code!s}
 --====--
-''', exc_info=True)
+""",
+                    exc_info=True,
+                )
                 self._handle_landing_error(exc)
-                return exc,
+                return (exc,)
 
         # standard landing
         if wire_dir is None or len(wire_dir) <= 0:
@@ -889,27 +925,32 @@ HBI {self.net_info}, error custom landing code:
                 return None, maybe_coro
 
             except Exception as exc:
-                logger.debug(rf'''
+                logger.debug(
+                    rf"""
 HBI {self.net_info}, error landing code:
 --CODE--
 {code!s}
 --DEFS--
 {defs!r}
 --====--
-''', exc_info=True)
+""",
+                    exc_info=True,
+                )
                 # try handle the error by hbic class
                 self._handle_landing_error(exc)
                 # return the err so if a coro running, it has a chance to capture it
                 return exc, None
 
         else:
-            raise RuntimeError(f'HBI unknown wire directive [{wire_dir}]')
+            raise RuntimeError(f"HBI unknown wire directive [{wire_dir}]")
 
     def _begin_offload(self, sink):
         if self._data_sink is not None:
-            raise RuntimeError('HBI already offloading data')
+            raise RuntimeError("HBI already offloading data")
         if not callable(sink):
-            raise RuntimeError('HBI sink to offload data must be a function accepting data chunks')
+            raise RuntimeError(
+                "HBI sink to offload data must be a function accepting data chunks"
+            )
         self._data_sink = sink
         if self._recv_buffer.nbytes > 0:
             # having buffered data, dump to sink
@@ -922,11 +963,11 @@ HBI {self.net_info}, error landing code:
                     break
                 sink(chunk)
         else:
-            sink(b'')
+            sink(b"")
 
     def _end_offload(self, read_ahead=None, sink=None):
         if sink is not None and sink is not self._data_sink:
-            raise RuntimeError('HBI resuming from wrong sink')
+            raise RuntimeError("HBI resuming from wrong sink")
         self._data_sink = None
         if read_ahead:
             self._recv_buffer.appendleft(read_ahead)
@@ -940,7 +981,9 @@ HBI {self.net_info}, error landing code:
 
         # use a generator function to pull all buffers from hierarchy
         def pull_from(boc):
-            b = self.cast_to_tgt_buffer(boc)  # this static method can be overridden by subclass
+            b = self.cast_to_tgt_buffer(
+                boc
+            )  # this static method can be overridden by subclass
             if b:
                 yield b
             else:
@@ -958,7 +1001,7 @@ HBI {self.net_info}, error landing code:
 
             if chunk is None:
                 if not fut.done():
-                    fut.set_exception(RuntimeError('HBI disconnected'))
+                    fut.set_exception(RuntimeError("HBI disconnected"))
                 self._end_offload(None, data_sink)
 
             try:
@@ -1007,7 +1050,9 @@ HBI {self.net_info}, error landing code:
                         # and done
                         return
                     except Exception as exc:
-                        raise RuntimeError('HBI buffer source raised exception') from exc
+                        raise RuntimeError(
+                            "HBI buffer source raised exception"
+                        ) from exc
             except Exception as exc:
                 self._handle_wire_error(exc)
                 if not fut.done():
@@ -1033,11 +1078,11 @@ HBI {self.net_info}, error landing code:
             # not in active corun conversation
             if self._co_local_ack is None or self._co_local_done is None:
                 # nor in passive corun conversation
-                raise RuntimeError('Not in corun conversation!')
+                raise RuntimeError("Not in corun conversation!")
             # in passive corun conversation
             if self._co_local_done.done():
                 # this actually possible ?
-                raise RuntimeError('Passive corun conversation has ended!')
+                raise RuntimeError("Passive corun conversation has ended!")
             # remote peer won't send out-of-conversion data before co_end,
             # so it's okay for pipelined receiving for current conversation,
             # whether ack from local has been put on wire or not.
@@ -1061,11 +1106,11 @@ HBI {self.net_info}, error landing code:
             # not in active corun conversation
             if self._co_local_ack is None or self._co_local_done is None:
                 # nor in passive corun conversation
-                raise RuntimeError('Not in corun conversation!')
+                raise RuntimeError("Not in corun conversation!")
             # in passive corun conversation
             if self._co_local_done.done():
                 # this actually possible ?
-                raise RuntimeError('Passive corun conversation has ended!')
+                raise RuntimeError("Passive corun conversation has ended!")
             # remote peer won't send out-of-conversion data before co_end,
             # so it's okay for pipelined receiving for current conversation,
             # whether ack from local has been put on wire or not.
@@ -1107,8 +1152,9 @@ HBI {self.net_info}, error landing code:
                 while self._recv_obj_waiters:
                     obj_waiter = self._recv_obj_waiters.popleft()
                     if obj_waiter.done():
-                        assert obj_waiter.cancelled() or obj_waiter.exception is not None, \
-                            'got result already ?!'
+                        assert (
+                            obj_waiter.cancelled() or obj_waiter.exception is not None
+                        ), "got result already ?!"
                         # ignore a waiter whether it is cancelled or met other exceptions
                         continue  # find next waiter to receive the landed value
                     landed = self._landed_queue.popleft()
@@ -1116,7 +1162,7 @@ HBI {self.net_info}, error landing code:
                         co_task = landed[1]
                         chain_future(co_task, obj_waiter)
                     else:
-                        assert len(landed) == 2, '?!'
+                        assert len(landed) == 2, "?!"
                         if landed[0] is None:
                             obj_waiter.set_result(landed[1])
                         else:
@@ -1147,7 +1193,7 @@ HBI {self.net_info}, error landing code:
                     continue
                 if len(landed) not in (2, 3):
                     raise RuntimeError(
-                        f'land result is {type(landed).__name__} of {len(landed)} ?!'
+                        f"land result is {type(landed).__name__} of {len(landed)} ?!"
                     )
 
                 if self._co_remote_ack is None and self._co_local_ack is None:
@@ -1171,15 +1217,16 @@ HBI {self.net_info}, error landing code:
                 while self._recv_obj_waiters:
                     obj_waiter = self._recv_obj_waiters.popleft()
                     if obj_waiter.done():
-                        assert obj_waiter.cancelled() or obj_waiter.exception is not None, \
-                            'got result already ?!'
+                        assert (
+                            obj_waiter.cancelled() or obj_waiter.exception is not None
+                        ), "got result already ?!"
                         # ignore a waiter whether it is cancelled or met other exceptions
                         continue  # find next waiter to receive the landed value
                     if len(landed) == 3:
                         co_task = landed[1]
                         chain_future(co_task, obj_waiter)
                     else:
-                        assert len(landed) == 2, '?!'
+                        assert len(landed) == 2, "?!"
                         if landed[0] is None:
                             obj_waiter.set_result(landed[1])
                         else:
@@ -1199,7 +1246,7 @@ HBI {self.net_info}, error landing code:
 
 
 class _CoHBIC:
-    __slots__ = 'hbic', 'co_req', 'co_ack',
+    __slots__ = "hbic", "co_req", "co_ack"
 
     def __init__(self, hbic: AbstractHBIC):
         self.hbic = hbic
@@ -1209,10 +1256,10 @@ class _CoHBIC:
     async def __aenter__(self):
         hbic = self.hbic
         await hbic._send_mutex.acquire(), await hbic._corun_mutex.acquire()
-        assert hbic._co_remote_ack is None, 'co act not cleaned ?!'
+        assert hbic._co_remote_ack is None, "co act not cleaned ?!"
         co_ack = hbic._co_remote_ack = self.co_ack
         local_co_id = id(co_ack)
-        await hbic._send_text(repr(local_co_id), b'co_begin')
+        await hbic._send_text(repr(local_co_id), b"co_begin")
         await co_ack
         return hbic
 
@@ -1222,15 +1269,15 @@ class _CoHBIC:
         if co_ack is None:
             # got no chance to lock the mutex, not to release either
             return
-        assert co_ack is self.co_ack, 'context corrupted ?!'
+        assert co_ack is self.co_ack, "context corrupted ?!"
         hbic._co_remote_ack = None
         if hbic._landed_queue:
             logger.warning(
-                f'Non-empty app queue ({len(hbic._landed_queue)} objects)'
-                f' at end of active conversation.'
+                f"Non-empty app queue ({len(hbic._landed_queue)} objects)"
+                f" at end of active conversation."
             )
             hbic._landed_queue.clear()
         local_co_id = id(co_ack)
-        await hbic._send_text(repr(local_co_id), b'co_end')
+        await hbic._send_text(repr(local_co_id), b"co_end")
         hbic._corun_mutex.release()
         hbic._send_mutex.release()

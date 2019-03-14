@@ -1,9 +1,7 @@
 import asyncio
 from collections import deque
 
-__all__ = [
-    'SendCtrl',
-]
+__all__ = ["SendCtrl"]
 
 
 class SendCtrl(asyncio.Lock):
@@ -17,7 +15,7 @@ class SendCtrl(asyncio.Lock):
 
     def startup(self):
         if self._waiters:
-            raise Exception('Unclean startup', {'waiters': self._waiters})
+            raise Exception("Unclean startup", {"waiters": self._waiters})
         self._flowing = True
 
     def shutdown(self, exc=None):
@@ -28,7 +26,7 @@ class SendCtrl(asyncio.Lock):
             if fut.done():
                 continue
             if not exc:  # init BPE as late as possible
-                exc = BrokenPipeError('transport closed')
+                exc = BrokenPipeError("transport closed")
             fut.set_exception(exc)
 
     async def flowing(self):

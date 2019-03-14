@@ -5,17 +5,17 @@ import sys
 import setuptools
 
 # Avoid polluting the .tar.gz with ._* files under Mac OS X
-os.putenv('COPYFILE_DISABLE', 'true')
+os.putenv("COPYFILE_DISABLE", "true")
 
 root = os.path.dirname(__file__)
 
 description = "Hosting Based Interfacing"
 
-with open(os.path.join(root, 'README'), encoding='utf-8') as f:
-    long_description = '\n\n'.join(f.read().split('\n\n')[1:])
+with open(os.path.join(root, "README"), encoding="utf-8") as f:
+    long_description = "\n\n".join(f.read().split("\n\n")[1:])
 
-version = '??'
-with open(os.path.join(root, 'hbi', 'version.py'), encoding='utf-8') as f:
+version = "??"
+with open(os.path.join(root, "hbi", "version.py"), encoding="utf-8") as f:
     exec(f.read())
 
 py_version = sys.version_info[:2]
@@ -23,10 +23,10 @@ py_version = sys.version_info[:2]
 if py_version < (3, 6):
     raise Exception("hbi requires Python >= 3.6.")
 
-packages = ['hbi']
+packages = ["hbi"]
 
 all_files_by_dir = {}
-for f in glob.glob('hbi/**/*.py', recursive=True):
+for f in glob.glob("hbi/**/*.py", recursive=True):
     d, n = os.path.dirname(f), f  # os.path.basename(f)
     if d in all_files_by_dir:
         all_files_by_dir[d].append(n)
@@ -35,18 +35,17 @@ for f in glob.glob('hbi/**/*.py', recursive=True):
 data_files = list(all_files_by_dir.items())
 
 setuptools.setup(
-    name='hbi',
+    name="hbi",
     version=version,
-    author='Compl Yue',
-    author_email='',
-    url='https://github.com/complyue/hbipy',
+    author="Compl Yue",
+    author_email="",
+    url="https://github.com/complyue/hbipy",
     description=description,
     long_description=long_description,
-    download_url='https://pypi.python.org/pypi/hbi',
+    download_url="https://pypi.python.org/pypi/hbi",
     packages=packages,
     data_files=data_files,
-    extras_require={
-    },
+    extras_require={},
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
@@ -56,6 +55,6 @@ setuptools.setup(
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.6",
     ],
-    platforms='all',
-    license='BSD'
+    platforms="all",
+    license="BSD",
 )

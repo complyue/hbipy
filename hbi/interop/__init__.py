@@ -5,11 +5,7 @@
 import json
 from math import nan
 
-__all__ = [
-    'null', 'true', 'false', 'nan', 'NaN',
-
-    'JSOND',
-]
+__all__ = ["null", "true", "false", "nan", "NaN", "JSOND"]
 
 null = None
 true = True

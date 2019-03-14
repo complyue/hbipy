@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Echo Pool Server",
+      "type": "python",
+      "request": "launch",
+      "module": "hbi.pool",
+      "args": ["hbi.echo", "-p", "3232"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Echo Client",
+      "type": "python",
+      "request": "launch",
+      "module": "hbi.echo",
+      "args": ["-h", "localhost", "-p", "3232"],
+      "console": "integratedTerminal"
+    }
+  ]
+}

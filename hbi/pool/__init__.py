@@ -1,5 +1,3 @@
 from .consumer import *
 
-__all__ = [
-    'ServiceMaster',
-]
+__all__ = ["ServiceMaster"]

@@ -1,6 +1,4 @@
-__all__ = [
-    'BufferList',
-]
+__all__ = ["BufferList"]
 
 
 class BufferList:

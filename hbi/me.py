@@ -7,9 +7,7 @@ HBI module environment
 __all__ = ()
 
 # shared variables amongst pool master and procs, must be transferable via dict repr
-__share__ = (
-    'host', 'addr', 'net_opts', 'modu_name', 'init_globals', 'argv',
-)
+__share__ = ("host", "addr", "net_opts", "modu_name", "init_globals", "argv")
 
 host = None
 port = 3232

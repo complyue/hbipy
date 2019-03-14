@@ -7,9 +7,7 @@ HBI pool service proc environment
 __all__ = ()
 
 # shared variables amongst pool master and procs, must be transferable via dict repr
-__share__ = (
-    'worker_rss_quota',
-)
+__share__ = ("worker_rss_quota",)
 
 # proc worker subprocess life ctrl parameters
 # retire if resident set size exceeds this quota

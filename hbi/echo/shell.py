@@ -5,9 +5,7 @@ from code import InteractiveConsole
 import hbi
 from hbi.log import get_logger
 
-__all__ = [
-    'HBIConsole',
-]
+__all__ = ["HBIConsole"]
 
 logger = get_logger(__name__)
 
@@ -27,7 +25,7 @@ class HBIConsole(InteractiveConsole):
 
     def runsource(self, source, filename="<input>", symbol="single"):
         if not self.hbi_peer.connected:
-            logger.warning('HBI disconnected, exiting...')
+            logger.warning("HBI disconnected, exiting...")
             sys.exit(1)
 
         source = str(source).lstrip()
@@ -35,30 +33,31 @@ class HBIConsole(InteractiveConsole):
             # empty source, nop
             return
 
-        if '%' == source[0]:
+        if "%" == source[0]:
             # magic cmd
 
-            if '%land' == source.strip():
+            if "%land" == source.strip():
                 self.land_code = True
-                logger.warning('%%% Now HBI code will be landed locally')
+                logger.warning("%%% Now HBI code will be landed locally")
                 return
-            if '%noland' == source.strip():
+            if "%noland" == source.strip():
                 self.land_code = False
-                logger.warning('%%% Now HBI code will NOT be landed locally')
+                logger.warning("%%% Now HBI code will NOT be landed locally")
                 return
 
-            if source.startswith('%co '):
+            if source.startswith("%co "):
                 self.hbi_peer.fire_corun(source[4:])
                 return
 
-            logger.error(f'No such magic: {source}')
+            logger.error(f"No such magic: {source}")
 
         self.hbi_peer.fire(source)
 
     def console_session(self):
         err_disconnect, err_stack = None, None
         try:
-            self.interact(fr'''
+            self.interact(
+                fr"""
 HBI connected {self.hbi_peer.net_info}
 
                     -==[ WARNING ]==- 
@@ -68,22 +67,25 @@ HBI connected {self.hbi_peer.net_info}
 &&& Now HBI code will{'' if self.land_code else ' NOT'} be landed, 
 &&& you can control local landing with %land and %noland magic commands.
 
-''', r'''
+""",
+                r"""
 Bye.
-''')
+""",
+            )
 
         except (SystemExit, KeyboardInterrupt):
             # while shell not running, further disconnection is expected
             self.running = False
         except Exception as exc:
             import traceback
+
             err_disconnect = exc
             err_stack = traceback.format_exc()
         self.hbi_peer.disconnect(err_disconnect, err_stack, try_send_peer_err=False)
 
     def run(self):
         self.running = True
-        sys.ps1 = 'hbi> '
+        sys.ps1 = "hbi> "
 
         # main thread must run hbi loop, the repl has to run in a separate thread
         th = threading.Thread(target=self.console_session)

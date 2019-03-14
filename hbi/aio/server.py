@@ -1,9 +1,7 @@
 import asyncio
 from concurrent import futures
 
-__all__ = [
-    'run_aio_servers',
-]
+__all__ = ["run_aio_servers"]
 
 
 def run_aio_servers():

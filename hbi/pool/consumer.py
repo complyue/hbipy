@@ -10,9 +10,7 @@ from concurrent import futures
 from ..log import get_logger
 from ..sockconn import HBIC
 
-__all__ = [
-    'ServiceMaster',
-]
+__all__ = ["ServiceMaster"]
 
 logger = get_logger(__name__)
 
@@ -20,18 +18,25 @@ logger = get_logger(__name__)
 class ServiceMaster:
     """
     """
+
     __slots__ = (
-        'context', 'master_hbic', 'proc_hbic', 'session',
-        'ack_timeout', 'net_opts',
-        'proc_conn_cache',
+        "context",
+        "master_hbic",
+        "proc_hbic",
+        "session",
+        "ack_timeout",
+        "net_opts",
+        "proc_conn_cache",
     )
 
     def __init__(
-            self,
-            context: dict, master_addr: dict,
-            *,
-            session: str = None,
-            net_opts: dict = None, ack_timeout: float = 10.0,
+        self,
+        context: dict,
+        master_addr: dict,
+        *,
+        session: str = None,
+        net_opts: dict = None,
+        ack_timeout: float = 10.0,
     ):
         self.context = context
         self.master_hbic = HBIC(globals(), master_addr, net_opts)
@@ -74,9 +79,11 @@ class ServiceMaster:
         # request service master to assign a proc
         await self.master_hbic.wait_connected()
         async with self.master_hbic.co() as master_hbic:
-            proc_addr = await master_hbic.co_get(rf'''
+            proc_addr = await master_hbic.co_get(
+                rf"""
 assign_proc({self.session!r})
-''')
+"""
+            )
             proc_cache_key = json.dumps(proc_addr)
             proc_hbic = self.proc_conn_cache.get(proc_cache_key, None)
             if proc_hbic is None:
@@ -109,7 +116,8 @@ class ServiceCo:
     """
 
     """
-    __slots__ = 'master', 'session', 'co',
+
+    __slots__ = "master", "session", "co"
 
     def __init__(self, master: ServiceMaster, session: str = None):
         self.master = master
@@ -122,7 +130,7 @@ class ServiceCo:
         hbic = await co.__aenter__()
         self.co = co
 
-        logger.debug(f'Pool proc {hbic!r} bound for session {self.session!s}')
+        logger.debug(f"Pool proc {hbic!r} bound for session {self.session!s}")
         return hbic
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -134,12 +142,14 @@ class ServiceCo:
         try:
             await co.__aexit__(exc_type, exc_val, exc_tb)
         except Exception:
-            logger.fatal(f'HBI co context error.', exc_info=True)
-            co.hbic.disconnect('HBI co context error.')
+            logger.fatal(f"HBI co context error.", exc_info=True)
+            co.hbic.disconnect("HBI co context error.")
         else:
             if exc_type is not None:
-                if issubclass(exc_type, (asyncio.CancelledError, futures.CancelledError)):
-                    err_reason = f'HBI service consumer cancellation.'
+                if issubclass(
+                    exc_type, (asyncio.CancelledError, futures.CancelledError)
+                ):
+                    err_reason = f"HBI service consumer cancellation."
                 else:
-                    err_reason = f'HBI service consumer error: {exc_type!s} {exc_val!s}'
+                    err_reason = f"HBI service consumer error: {exc_type!s} {exc_val!s}"
                 co.hbic.disconnect(err_reason)

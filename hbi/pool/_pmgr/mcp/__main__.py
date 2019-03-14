@@ -12,7 +12,9 @@ from hbi.log import get_logger
 from hbi.pool import pe
 from hbi.pool.mgmt import *
 
-assert '__hbi_pool_consumer_peer__' == __name__, 'this only meant to run as peer of service pool consumer!'
+assert (
+    "__hbi_pool_consumer_peer__" == __name__
+), "this only meant to run as peer of service pool consumer!"
 
 logger = get_logger(__package__)
 
@@ -24,14 +26,14 @@ consumer: ServiceConsumer = None
 def hbi_connected():
     global consumer
 
-    logger.debug(f'HBI pool consumer peer {hbi_peer} connected.')
+    logger.debug(f"HBI pool consumer peer {hbi_peer} connected.")
 
-    assert consumer is None, 'dirty mcp module ?!'
+    assert consumer is None, "dirty mcp module ?!"
     consumer = ServiceConsumer(hbi_peer)
 
 
 def hbi_boot():
-    hbi_peer.disconnect('You normally connect to HBI pool via hbi.pool.ServiceMaster()')
+    hbi_peer.disconnect("You normally connect to HBI pool via hbi.pool.ServiceMaster()")
 
 
 async def assign_proc(session: str = None, sticky: Optional[bool] = None):
@@ -51,9 +53,9 @@ def hbi_disconnected(exc=None):
     global consumer
 
     if exc is not None:
-        logger.warning(f'HBI consumer disconnected due to error: {exc}')
+        logger.warning(f"HBI consumer disconnected due to error: {exc}")
     else:
-        logger.debug(f'HBI consumer disconnected.')
+        logger.debug(f"HBI consumer disconnected.")
 
     if consumer is not None:
         pe.master.release_proc(consumer)
