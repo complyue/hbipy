@@ -23,7 +23,7 @@ def print_usage():
     print(
         r"""
 Run HBI module in adhoc server or client mode, usage:
-  python -m hbi <module> [-l] [-6] [-p port] [-h host] [-s sock]
+  python -m hbi <module> [-l] [-6] [-p port] [-r ip-to-addr] [-h host] [-s sock]
 """,
         file=sys.stderr,
     )
@@ -34,6 +34,7 @@ def main():
         return print_usage()
 
     run_server = False
+    remote_addr = None
 
     arg_i = 0
     while arg_i + 1 < len(sys.argv):
@@ -54,6 +55,11 @@ def main():
         if "-p" == sys.argv[arg_i]:
             arg_i += 1
             me.port = int(sys.argv[arg_i])
+            continue
+
+        if "-r" == sys.argv[arg_i]:
+            arg_i += 1
+            remote_addr = sys.argv[arg_i]
             continue
 
         if "-h" == sys.argv[arg_i]:
@@ -81,6 +87,19 @@ def main():
     me.loop = asyncio.get_event_loop()
 
     if run_server:
+
+        if remote_addr is not None:
+            # determine host ip to listen by outgoing test to another host:port
+            try:
+                rhost, rport = remote_addr, 80
+                with_port = remote_addr.rsplit(":", 1)
+                if len(with_port) == 2:
+                    rhost, rport = with_port[0], int(with_port[1])
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect((rhost, rport))
+                me.host = s.getsockname()[0]
+            finally:
+                s.close()
 
         if me.addr is None:
             if me.host is None:
