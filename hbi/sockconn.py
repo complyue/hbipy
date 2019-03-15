@@ -206,6 +206,10 @@ class HBIC(AbstractHBIC):
                 self._conn_fut = None
                 fut.set_exception(exc)
 
+            wire_fut = self._wire_fut
+            if wire_fut is not None and not wire_fut.done():
+                wire_fut.set_exception(exc)
+
     async def _send_text(self, code, wire_dir=b""):
         if isinstance(code, bytes):
             payload = code
