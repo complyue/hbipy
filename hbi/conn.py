@@ -243,7 +243,11 @@ class AbstractHBIC:
 
     @property
     def connected(self):
-        return self._wire is not None
+        if self._wire is not None:
+            if self._conn_fut is not None:  # be None for server conn
+                assert self._conn_fut.result() is self, "?!"
+            return True
+        return False
 
     @property
     def net_info(self):
@@ -367,6 +371,9 @@ HBI disconnecting {self.net_info} due to error:
         self._disconnecting = False
 
         if self.connected:
+            assert (
+                self._conn_fut is not None and self._conn_fut.result() is self
+            ), "connected w/o ressolved fut ?!"
             if (addr is None or addr == self.addr) and (
                 net_opts is None or net_opts == self.net_opts
             ):
@@ -382,6 +389,11 @@ HBI disconnecting {self.net_info} due to error:
         if not self.addr:
             raise asyncio.InvalidStateError("attempt connecting without addr")
 
+        # make sure we have a pending _conn_fut before attempting wire connection
+        fut = self._conn_fut
+        if fut is None or fut.done():
+            self._conn_fut = self._loop.create_future()
+
         # this can be called from any thread
         self._loop.call_soon_threadsafe(self._loop.create_task, self._connect())
 
@@ -391,9 +403,10 @@ HBI disconnecting {self.net_info} due to error:
         self._send_mutex.startup()
 
         fut = self._conn_fut
-        if fut is not None:
-            self._conn_fut = None
-            if not fut.done():
+        if fut is not None:  # be None for server conn
+            if fut.done():
+                assert fut.exception() is None and fut.result() is self, "?!"
+            else:
                 fut.set_result(self)
 
         conn_cb = self.context.get("hbi_connected", None)
@@ -404,13 +417,15 @@ HBI disconnecting {self.net_info} due to error:
 
     async def wait_connected(self):
         if self.connected:
-            return
+            fut = self._conn_fut
+            assert fut is not None, "connected w/o conn fut ?!"
+            return await fut
 
         self.connect()
 
-        if self._conn_fut is None:
-            self._conn_fut = self._loop.create_future()
-        await self._conn_fut
+        fut = self._conn_fut
+        assert fut is not None, "no conn fut ?!"
+        await fut
 
     def run_until_connected(self):
         if self.connected:

@@ -78,7 +78,11 @@ class SocketProtocol(asyncio.Protocol):
         self.hbic._disconnected(exc)
 
         self.hbic._wire = None
-        self.hbic._wire_fut = None
+        wire_fut = self.hbic._wire_fut
+        if wire_fut is not None:
+            if not wire_fut.done():
+                wire_fut.set_exception(RuntimeError("connection lost"))
+            self.hbic._wire_fut = None
 
 
 class HBIC(AbstractHBIC):
@@ -202,9 +206,8 @@ class HBIC(AbstractHBIC):
 
         except Exception as exc:
             fut = self._conn_fut
-            if fut is not None:
-                self._conn_fut = None
-                fut.set_exception(exc)
+            assert fut is not None and not fut.done(), "not holding pending conn fut ?!"
+            fut.set_exception(exc)
 
             wire_fut = self._wire_fut
             if wire_fut is not None and not wire_fut.done():
