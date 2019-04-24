@@ -34,7 +34,7 @@ def main():
         return print_usage()
 
     run_server = False
-    remote_addr = None
+    remote_host = None
 
     arg_i = 0
     while arg_i + 1 < len(sys.argv):
@@ -59,7 +59,7 @@ def main():
 
         if "-r" == sys.argv[arg_i]:
             arg_i += 1
-            remote_addr = sys.argv[arg_i]
+            remote_host = sys.argv[arg_i]
             continue
 
         if "-h" == sys.argv[arg_i]:
@@ -88,18 +88,12 @@ def main():
 
     if run_server:
 
-        if remote_addr is not None:
-            # determine host ip to listen by outgoing test to another host:port
-            try:
-                rhost, rport = remote_addr, 80
-                with_port = remote_addr.rsplit(":", 1)
-                if len(with_port) == 2:
-                    rhost, rport = with_port[0], int(with_port[1])
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect((rhost, rport))
+        if remote_host is not None:
+            # determine local host ip to listen, by outgoing test to another host
+            # use port 9 (discard protocol - RFC 863) over UDP4
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((remote_host, 9))
                 me.host = s.getsockname()[0]
-            finally:
-                s.close()
 
         if me.addr is None:
             if me.host is None:
