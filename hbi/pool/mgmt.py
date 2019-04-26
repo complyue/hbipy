@@ -334,7 +334,7 @@ class ProcWorker:
         self.po = subprocess.Popen(
             [
                 sys.executable,
-                f"{hbi_dir}/run-module.py",
+                "-m",
                 f"{__package__}._pmgr.worker",
                 json.dumps(self.master.team_addr),
             ],

@@ -2,8 +2,7 @@ import sys
 import threading
 from code import InteractiveConsole
 
-import hbi
-from hbi.log import get_logger
+from .log import get_logger
 
 __all__ = ["HBIConsole"]
 
@@ -16,7 +15,7 @@ class HBIConsole(InteractiveConsole):
 
     """
 
-    def __init__(self, hbi_peer: hbi.HBIC):
+    def __init__(self, hbi_peer: "HBIC"):
         super().__init__()
 
         self.hbi_peer = hbi_peer

@@ -7,12 +7,63 @@ Hosting Based Interfacing
     peer nodes.
 
 """
-
+from .aio import *
+from .buflist import *
+from .bytesbuf import *
 from .conn import *
 from .context import *
-from .pool.consumer import *
+from .interop import *
+from .log import *
+from .pool import *
+from .proto import *
+from .sendctrl import *
+from .shell import *
 from .sockconn import *
-from .version import version as __version__
+from .util import *
+from .version import *
 
-__all__ = ["__version__", "HBIC", "ServiceMaster", "run_in_context"]
+__all__ = [
 
+    # exports from .aio
+    'run_aio_servers', 'handle_signals',
+
+    # exports from .buflist
+    'BufferList',
+
+    # exports from .bytesbuf
+    'BytesBuffer',
+
+    # exports from .conn
+    'AbstractHBIC',
+
+    # exports from .context
+    'run_in_context',
+
+    # exports from .interop
+    'null', 'true', 'false', 'nan', 'NaN', 'JSOND',
+
+    # exports from .log
+    'hbi_root_logger', 'get_logger',
+
+    # exports from .pool
+    'ServiceMaster', 'PoolMaster', 'ProcWorker', 'ServiceConsumer',
+
+    # exports from .proto
+    'PACK_HEADER_MAX', 'PACK_BEGIN', 'PACK_LEN_END', 'PACK_END',
+
+    # exports from .sendctrl
+    'SendCtrl',
+
+    # exports from .shell
+    'HBIConsole',
+
+    # exports from .sockconn
+    'HBIC',
+
+    # exports from .util
+    'hrdsz', 'hwdsz',
+
+    # exports from .version
+    'version',
+
+]

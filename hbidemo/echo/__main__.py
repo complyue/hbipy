@@ -7,11 +7,9 @@ import asyncio
 import logging
 import sys
 
-import hbi
+from hbi import *
 from hbi import me
-from hbi.pool import ServiceMaster
 from hbi.pool import pe
-from .shell import *
 
 logger = logging.getLogger(__package__)
 
@@ -92,6 +90,7 @@ elif __name__ in ("__hbi_connecting__", "__main__"):
             # unexpected disconnection
             if err_reason is None:
                 logger.info("HBI connection closed by peer.")
+                sys.exit(0)
             else:
                 logger.error(
                     rf"""
@@ -99,7 +98,7 @@ HBI connection closed by peer due to error:
 {err_reason}
 """
                 )
-        sys.exit(1)
+                sys.exit(1)
 
     def __hbi_land__(code, wire_dir):
         # this magic method if defined, hijacks code received over HBI wire for local execution (landing)
@@ -207,4 +206,3 @@ HBI service pool interactive tact utility, usage:
 
 else:
     assert False, f"Unexpected run name: {__name__!s}"
-

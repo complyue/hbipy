@@ -22,15 +22,19 @@ logger = get_logger(__package__)
 this_process = psutil.Process(os.getpid())
 
 # modu run from python command line as HBI pool proc worker subprocess
-assert '__main__' == __name__
-assert len(sys.argv) == 2, 'HBI pool proc worker subprocess should be started with <team_addr> !'
+assert "__main__" == __name__
+assert (
+    len(sys.argv) == 2
+), "HBI pool proc worker subprocess should be started with <team_addr> !"
 pe.team_addr = json.loads(sys.argv[1])
 
 
 def hbi_connected():
-    hbi_peer.notif(rf'''
+    hbi_peer.notif(
+        rf"""
 worker_online({os.getpid()!r})
-''')
+"""
+    )
 
 
 hbi_proc_session_changing_to = None
@@ -42,27 +46,30 @@ async def serv_hbi_module(me_dict: dict, pe_dict: dict):
     vars(me).update(me_dict)
     vars(pe).update(pe_dict)
 
-    logger.info(f'Starting HBI proc with module [{me.modu_name}] on {me.host}')
+    logger.info(f"Starting HBI proc with module [{me.modu_name}] on {me.host}")
     me.server = await hbi.HBIC.create_server(
         lambda: runpy.run_module(
-            me.modu_name, init_globals=me.init_globals, run_name='__hbi_accepting__'
-        ), addr={
-            'host': me.host, 'port': None,  # let os assign arbitrary port
-        }, net_opts=me.net_opts, loop=me.loop
+            me.modu_name, init_globals=me.init_globals, run_name="__hbi_accepting__"
+        ),
+        addr={"host": me.host, "port": None},  # let os assign arbitrary port
+        net_opts=me.net_opts,
+        loop=me.loop,
     )
     me.port = me.server.sockets[0].getsockname()[1]
-    me.addr = {'host': me.host, 'port': me.port}
-    logger.info(f'HBI proc serving [{me.modu_name}] on {me.addr}')
+    me.addr = {"host": me.host, "port": me.port}
+    logger.info(f"HBI proc serving [{me.modu_name}] on {me.addr}")
 
-    modu_dict = runpy.run_module(me.modu_name, run_name='__hbi_serving__')
-    hbi_proc_session_changing_to = modu_dict.get('hbi_proc_session_changing_to', None)
+    modu_dict = runpy.run_module(me.modu_name, run_name="__hbi_serving__")
+    hbi_proc_session_changing_to = modu_dict.get("hbi_proc_session_changing_to", None)
     if hbi_proc_session_changing_to is not None:
         assert callable(hbi_proc_session_changing_to)
         # todo validate that it accepts a single str arg as new session id
 
-    hbi_peer.notif(rf'''
+    hbi_peer.notif(
+        rf"""
 worker_serving({me.port!r})
-''')
+"""
+    )
 
 
 async def prepare_session(session: str = None):
@@ -80,7 +87,9 @@ async def retire(force: bool = False):
     if pe.service_wip is not None and not pe.service_wip.done():
         # with pending service task(s)
         if force:
-            logger.warning(f'forcefully retiring proc worker subprocess with pending service.')
+            logger.warning(
+                f"forcefully retiring proc worker subprocess with pending service."
+            )
         else:
             await pe.service_wip
     else:
@@ -94,7 +103,7 @@ async def retire(force: bool = False):
 
 
 def ping():
-    hbi_peer.fire('pong()')
+    hbi_peer.fire("pong()")
 
 
 def pong():
@@ -104,11 +113,13 @@ def pong():
 def hbi_disconnected(exc=None):
     if pe.retiring:
         if exc is not None:
-            logger.warning(f'HBI proc worker subprocess {os.getpid()} retired with error: {exc!s}')
+            logger.warning(
+                f"HBI proc worker subprocess {os.getpid()} retired with error: {exc!s}"
+            )
     else:
         logger.fatal(
-            f'HBI proc worker subprocess {os.getpid()} unexpectedly disconnected from team,'
-            f' error: {exc!s}'
+            f"HBI proc worker subprocess {os.getpid()} unexpectedly disconnected from team,"
+            f" error: {exc!s}"
         )
 
     # try graceful worker process exit by stopping event loop
@@ -121,9 +132,7 @@ def hbi_disconnected(exc=None):
 me.loop = asyncio.get_event_loop()
 try:
 
-    hbi_peer = hbi.HBIC(
-        globals(), pe.team_addr, loop=me.loop
-    )
+    hbi_peer = hbi.HBIC(globals(), pe.team_addr, loop=me.loop)
     hbi_peer.run_until_connected()
 
     handle_signals()

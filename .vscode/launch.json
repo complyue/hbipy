@@ -1,21 +1,46 @@
 {
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "name": "Echo Pool Server",
-      "type": "python",
-      "request": "launch",
-      "module": "hbi.pool",
-      "args": ["hbi.echo", "-p", "3232"],
-      "console": "integratedTerminal"
-    },
-    {
-      "name": "Echo Client",
-      "type": "python",
-      "request": "launch",
-      "module": "hbi.echo",
-      "args": ["-h", "localhost", "-p", "3232"],
-      "console": "integratedTerminal"
-    }
-  ]
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Echo Pool Server",
+            "type": "python",
+            "request": "launch",
+            "env": {
+                "HBI_LOG_LEVEL": "DEBUG"
+            },
+            "module": "hbi.pool",
+            "args": [
+                "hbidemo.echo",
+                "-p",
+                "3232"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Echo Client",
+            "type": "python",
+            "request": "launch",
+            "env": {
+                "HBI_LOG_LEVEL": "DEBUG"
+            },
+            "module": "hbidemo.echo",
+            "args": [
+                "-h",
+                "localhost",
+                "-p",
+                "3232"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Pretty Exports",
+            "type": "python",
+            "request": "launch",
+            "env": {},
+            "cwd": "${workspaceFolder}",
+            "program": "${workspaceFolder}/pretty-exports.py",
+            "args": [],
+            "console": "integratedTerminal"
+        }
+    ]
 }
