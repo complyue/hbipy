@@ -49,7 +49,7 @@ __all__ = [
     'ServiceMaster', 'PoolMaster', 'ProcWorker', 'ServiceConsumer',
 
     # exports from .proto
-    'PACK_HEADER_MAX', 'PACK_BEGIN', 'PACK_LEN_END', 'PACK_END',
+    'PACK_HEADER_MAX',
 
     # exports from .sendctrl
     'SendCtrl',
