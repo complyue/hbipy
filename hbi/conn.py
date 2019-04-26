@@ -98,7 +98,6 @@ class AbstractHBIC:
         "_loop",
         "_wire_fut",
         "_wire",
-        "_wire_ctx",
         "_data_sink",
         "_conn_fut",
         "_disc_fut",
@@ -145,7 +144,6 @@ class AbstractHBIC:
 
         self._wire_fut = None
         self._wire = None
-        self._wire_ctx = None
         self._data_sink = None
         self._conn_fut = None
         self._disc_fut = None
@@ -173,51 +171,26 @@ class AbstractHBIC:
         return repr(str(self))
 
     def _handle_wire_error(self, exc):
-        import traceback
-
-        traceback.print_exc()
-        logger.fatal(f"HBI {self.net_info} wire error occurred, forcing disconnection.")
+        logger.fatal(
+            f"HBI {self.net_info} wire error occurred, forcing disconnection.",
+            exc_info=True,
+        )
         err_stack = traceback.format_exc()
 
         self._cut_wire(exc, err_stack)
 
     def _handle_landing_error(self, exc):
-        try:
-
-            # if the HBI module declared an error handler, let it try handle the error first.
-            # the handler returns True to indicate that this error should be tolerated i.e. ignored.
-            modu_err_handler = self.context.get("hbi_handle_err", None)
-            if modu_err_handler is not None:
-                if True is modu_err_handler(exc):
-                    # HBI module claimed successful handling of this error
-                    return
-
-            # if in corun mode with at least one waiter, leave the error to be thrown into the coro
-            # running
-            if self._corun_mutex.locked() and self._recv_obj_waiters:
-                return
-
-        except Exception:
-            # error in error handling, will be reflected nextly
-            pass
-
         import traceback
 
-        traceback.print_exc()
-        logger.fatal(
-            f"HBI {self.net_info} landing error occurred, forcing disconnection."
+        logger.error(
+            f"HBI {self.net_info} landing error occurred, forcing disconnection.",
+            exc_info=True,
         )
         err_stack = traceback.format_exc()
         self.disconnect(exc, err_stack, True)
 
     def _handle_peer_error(self, message, stack=None):
         try:
-            modu_err_handler = self.context.get("hbi_handle_peer_err", None)
-            if modu_err_handler is not None:
-                if True is modu_err_handler(message, stack):
-                    # HBI module claimed successful handling of this error
-                    return
-
             if self._recv_obj_waiters:
                 # propagate peer error to co-receivers
                 exc = RuntimeError(f"HBI peer error: {message!s}")
@@ -228,13 +201,13 @@ class AbstractHBIC:
                         # may have been cancelled etc.
                         continue
                     waiter.set_exception(exc)
-
+            else:
+                logger.error(f"HBI {self.net_info} peer error occurred: {message!s}")
         except Exception:
-            import traceback
-
-            traceback.print_exc()
-            logger.fatal(f"HBI {self.net_info} error occurred in handling peer error.")
-
+            logger.fatal(
+                f"HBI {self.net_info} error occurred in handling peer error.",
+                exc_info=True,
+            )
         self.disconnect(f"Peer error: {message}", stack, False)
 
     @property
@@ -256,27 +229,17 @@ class AbstractHBIC:
             return "<unwired>"
         return f"[{_wire}]"
 
-    def run_until_disconnected(self, ensure_connected=True):
-        if not self.connected:
-            # disconnected atm
-
-            if not ensure_connected:
-                # nop in this case
-                return
-
-            # initiate connection now
-            self.connect()
-
-        if self._disc_fut is None:
-            self._disc_fut = self._loop.create_future()
-        self._loop.run_until_complete(self._disc_fut)
-
     def disconnect(self, err_reason=None, err_stack=None, try_send_peer_err=True):
+        # this is not a coroutine but returns an awaitable future
+        disc_fut = self._disc_fut
+        if disc_fut is None:
+            disc_fut = self._disc_fut = self._loop.create_future()
+
         if self._disconnecting:
             logger.debug(
                 f"Repeating disconnection request ignored. err_reason: {err_reason!s}"
             )
-            return
+            return disc_fut
         self._disconnecting = True
 
         if err_reason is not None:
@@ -304,13 +267,16 @@ HBI disconnecting {self.net_info} due to error:
 
         if self._loop.is_closed():
             logger.warning("HBI disconnection bypassed since loop already closed.")
-            return
+            return disc_fut
 
-        # this can be called from any thread
-        self._loop.call_soon_threadsafe(
-            self._loop.create_task,
-            self._disconnect(err_reason, err_stack, try_send_peer_err),
+        self._loop.create_task(
+            self._disconnect(err_reason, err_stack, try_send_peer_err)
         )
+
+        if disc_fut.done():
+            disc_fut = self._disc_fut = self._loop.create_future()
+
+        return disc_fut
 
     async def wait_disconnected(self):
         if not self.connected:
@@ -327,10 +293,15 @@ HBI disconnecting {self.net_info} due to error:
         raise NotImplementedError("subclass should implement this as a coroutine")
 
     def _disconnected(self, exc=None):
-        self._disconnecting = False
-
         if exc is not None:
             logger.warning(f"HBI connection unwired due to error: {exc}")
+
+        self._disconnecting = False
+        conn_fut = self._conn_fut
+        if conn_fut is not None:
+            self._conn_fut = None
+            if not conn_fut.done():
+                conn_fut.set_exception(exc or RuntimeError("HBI disconnected"))
 
         # abort pending tasks
         self._recv_buffer = None
@@ -347,11 +318,11 @@ HBI disconnecting {self.net_info} due to error:
 
         self._send_mutex.shutdown(exc)
 
-        fut = self._disc_fut
-        if fut is not None:
-            self._disc_fut = None
-            if not fut.done():
-                fut.set_result(self)
+        disc_fut = self._disc_fut
+        if disc_fut is None:
+            disc_fut = self._disc_fut = self._loop.create_future()
+        if not disc_fut.done():
+            disc_fut.set_result()
 
         disconn_cb = self.context.get("hbi_disconnected", None)
         if disconn_cb is not None:
@@ -368,17 +339,20 @@ HBI disconnecting {self.net_info} due to error:
         raise NotImplementedError("subclass should implement this as a coroutine")
 
     def connect(self, addr=None, net_opts=None):
-        self._disconnecting = False
+        # this is not a coroutine but returns an awaitable future
+        conn_fut = self._conn_fut
+        if conn_fut is None:
+            conn_fut = self._conn_fut = self._loop.create_future()
 
         if self.connected:
             assert (
-                self._conn_fut is not None and self._conn_fut.result() is self
+                conn_fut is not None and conn_fut.result() is None
             ), "connected w/o ressolved fut ?!"
             if (addr is None or addr == self.addr) and (
                 net_opts is None or net_opts == self.net_opts
             ):
                 # already connected as expected
-                return
+                return conn_fut
             raise asyncio.InvalidStateError(
                 "already connected to different addr, disconnect before connect to else where"
             )
@@ -389,25 +363,31 @@ HBI disconnecting {self.net_info} due to error:
         if not self.addr:
             raise asyncio.InvalidStateError("attempt connecting without addr")
 
-        # make sure we have a pending _conn_fut before attempting wire connection
-        fut = self._conn_fut
-        if fut is None or fut.done():
-            self._conn_fut = self._loop.create_future()
+        self._disconnecting = False
+        disc_fut = self._disc_fut
+        if disc_fut is not None:
+            self._disc_fut = None
+            if not disc_fut.done():
+                disc_fut.set_exception(RuntimeError("HBI re-connecting"))
 
-        # this can be called from any thread
-        self._loop.call_soon_threadsafe(self._loop.create_task, self._connect())
+        # make sure we have a pending _conn_fut before attempting wire connection
+        if conn_fut.done():
+            conn_fut = self._conn_fut = self._loop.create_future()
+
+        self._loop.create_task(self._connect())
+
+        return conn_fut
 
     def _connected(self):
-
         self._recv_buffer = BufferList()
         self._send_mutex.startup()
 
-        fut = self._conn_fut
-        if fut is not None:  # be None for server conn
-            if fut.done():
-                assert fut.exception() is None and fut.result() is self, "?!"
+        conn_fut = self._conn_fut
+        if conn_fut is not None:  # be None for server conn
+            if conn_fut.done():
+                assert fut.exception() is None and fut.result() is None, "?!"
             else:
-                fut.set_result(self)
+                conn_fut.set_result(None)
 
         conn_cb = self.context.get("hbi_connected", None)
         if conn_cb is not None:
@@ -416,22 +396,12 @@ HBI disconnecting {self.net_info} due to error:
                 asyncio.ensure_future(maybe_coro)
 
     async def wait_connected(self):
-        if self.connected:
-            fut = self._conn_fut
-            assert fut is not None, "connected w/o conn fut ?!"
-            return await fut
+        if not self.connected:
+            self.connect()
 
-        self.connect()
-
-        fut = self._conn_fut
-        assert fut is not None, "no conn fut ?!"
-        await fut
-
-    def run_until_connected(self):
-        if self.connected:
-            return
-
-        return self._loop.run_until_complete(self.wait_connected())
+        conn_fut = self._conn_fut
+        assert conn_fut is not None, "no conn fut ?!"
+        await conn_fut
 
     # implement HBIC as reusable async context manager for grace disconnection
 
@@ -454,7 +424,8 @@ HBI disconnecting {self.net_info} due to error:
         self.disconnect(err_reason, err_stack, try_send_peer_err=True)
         await self.wait_disconnected()
 
-    @property
+    # TODO cont. here
+
     def in_corun(self):
         """
         whether local peer is currently in corun mode
@@ -874,36 +845,13 @@ HBI {self.net_info}, error co-getting for remote conversation {remote_co_id}:
             co_task = self._loop.create_task(coro)
             return (None,)  # don't make available to application
 
-        elif "wire" == wire_dir:
-            # got wire affair packet, land it
+        elif "err" == wire_dir:
+            # peer error
+            self._handle_peer_error(code)
+            # treat wire error as void protocol affair, giving NO value to application layer
+            return (None,)
 
-            if self._wire_ctx is None:  # populate this wire's ctx jit
-                self._wire_ctx = {attr: getattr(self, attr) for attr in dir(self)}
-
-                # universal functions for HBI peers in different languages
-                self._wire_ctx["handlePeerErr"] = self._handle_peer_error
-
-            defs = {}
-            try:
-                affair = run_in_context(code, self._wire_ctx, defs)
-                return (affair,)  # not giving affair to application layer
-            except Exception as exc:
-                logger.debug(
-                    rf"""
-HBI {self.net_info}, error landing wire code:
---CODE--
-{code!s}
---DEFS--
-{defs!r}
---====--
-""",
-                    exc_info=True,
-                )
-                self._handle_wire_error(exc)
-                # treat wire error as void protocol affair, giving NO value to application layer
-                return (None,)
-
-                # allow customization of code landing
+            # allow customization of code landing
         lander = self.context.get("__hbi_land__", None)
         if lander is not None:
             assert callable(lander), "non-callable __hbi_land__ defined ?!"

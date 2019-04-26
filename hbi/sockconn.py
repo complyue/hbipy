@@ -265,12 +265,7 @@ class HBIC(AbstractHBIC):
             if not _wire.transport.is_closing():
                 # try send peer error
                 try:
-                    await self._send_text(
-                        rf"""
-handlePeerErr({err_reason!r},{err_stack!r})
-""",
-                        b"wire",
-                    )
+                    await self._send_text(err_reason, b"err")
                 except Exception:
                     logger.warning("HBI failed sending peer error", exc_info=True)
                 # close outgoing channel

@@ -5,6 +5,9 @@ __all__ = ["SendCtrl"]
 
 
 class SendCtrl(asyncio.Lock):
+    """
+    """
+
     def __init__(self, flowing=True, *, loop=None, **kwargs):
         """
         :param flowing: initial state to be `flowing` or not
@@ -12,6 +15,9 @@ class SendCtrl(asyncio.Lock):
         super().__init__(loop=loop, **kwargs)
         self._flowing = flowing
         self._waiters = deque()
+
+    def qlen(self):
+        return len(self._waiters)
 
     def startup(self):
         if self._waiters:
@@ -37,13 +43,12 @@ class SendCtrl(asyncio.Lock):
         # is in flowing state, return fast
         if self._flowing:
             return
-        pass
+
         # in non-flowing state, await unleash notification
         fut = self._loop.create_future()
         self._waiters.append(fut)
         try:
             await fut
-            return
         except asyncio.CancelledError:
             # remove earlier to conserve some RAM, or it'll be removed from the deque at next unleash
             self._waiters.remove(fut)
