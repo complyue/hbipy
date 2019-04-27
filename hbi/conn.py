@@ -4,6 +4,7 @@ import logging
 from collections import deque
 from typing import *
 
+from ._details import *
 from .buflist import *
 from .bytesbuf import *
 from .context import run_in_context
@@ -14,80 +15,11 @@ __all__ = ["AbstractHBIC"]
 logger = logging.getLogger(__name__)
 
 
-def chain_future(from_fut, to_fut):
-    assert asyncio.isfuture(from_fut)
-
-    if to_fut.done():
-        # target already cancelled etc.
-        return
-
-    def from_fut_cb(fut):
-
-        if to_fut.done():
-            # target already cancelled etc.
-            return
-
-        if fut.cancelled():
-            to_fut.cancel()
-        elif fut.exception() is not None:
-            to_fut.set_exception(fut.exception())
-        else:
-            fr = fut.result()
-            if asyncio.isfuture(fr):
-                # continue the from_fut chain
-                chain_future(fr, to_fut)
-            else:
-                # just resolved
-                to_fut.set_result(fr)
-
-    asyncio.ensure_future(from_fut).add_done_callback(from_fut_cb)
-
-
 class AbstractHBIC:
     """
     Abstract HBI Connection
 
     """
-
-    @staticmethod
-    def cast_to_src_buffer(boc):
-        if isinstance(boc, (bytes, bytearray)):
-            # it's a bytearray
-            return boc
-        if not isinstance(boc, memoryview):
-            try:
-                boc = memoryview(boc)
-            except TypeError:
-                return None
-        # it's a memoryview now
-        if boc.nbytes == 0:  # if zero-length, replace with empty bytes
-            # coz when a zero length ndarray is viewed, cast/send will raise while not needed at all
-            return b""
-        elif boc.itemsize != 1:
-            return boc.cast("B")
-        return boc
-
-    @staticmethod
-    def cast_to_tgt_buffer(boc):
-        if isinstance(boc, bytes):
-            raise TypeError("bytes can not be target buffer since readonly")
-        if isinstance(boc, bytearray):
-            # it's a bytearray
-            return boc
-        if not isinstance(boc, memoryview):
-            try:
-                boc = memoryview(boc)
-            except TypeError:
-                return None
-        # it's a memoryview now
-        if boc.readonly:
-            raise TypeError("readonly memoryview can not be target buffer")
-        if boc.nbytes == 0:  # if zero-length, replace with empty bytes
-            # coz when a zero length ndarray is viewed, cast/send will raise while not needed at all
-            return b""
-        elif boc.itemsize != 1:
-            return boc.cast("B")
-        return boc
 
     __slots__ = (
         "context",
@@ -635,7 +567,7 @@ HBI disconnecting {self.net_info} due to error:
         # use a generator function to pull all buffers from hierarchy
 
         def pull_from(boc):
-            b = self.cast_to_src_buffer(
+            b = cast_to_src_buffer(
                 boc
             )  # this static method can be overridden by subclass
             if b is not None:
@@ -944,7 +876,7 @@ HBI {self.net_info}, error landing code:
 
         # use a generator function to pull all buffers from hierarchy
         def pull_from(boc):
-            b = self.cast_to_tgt_buffer(
+            b = cast_to_tgt_buffer(
                 boc
             )  # this static method can be overridden by subclass
             if b:

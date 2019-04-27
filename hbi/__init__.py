@@ -12,8 +12,9 @@ from .buflist import *
 from .bytesbuf import *
 from .conn import *
 from .context import *
-from .interop import *
+from .ho import *
 from .log import *
+from .po import *
 from .pool import *
 from .proto import *
 from .sendctrl import *
@@ -39,11 +40,14 @@ __all__ = [
     # exports from .context
     'run_in_context',
 
-    # exports from .interop
-    'null', 'true', 'false', 'nan', 'NaN', 'JSOND',
+    # exports from .ho
+    'HostingEnd',
 
     # exports from .log
     'hbi_root_logger', 'get_logger',
+
+    # exports from .po
+    'PostingEnd',
 
     # exports from .pool
     'ServiceMaster', 'PoolMaster', 'ProcWorker', 'ServiceConsumer',

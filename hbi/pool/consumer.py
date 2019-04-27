@@ -5,7 +5,6 @@ Service Pool consumer interface
 
 import asyncio
 import json
-from concurrent import futures
 
 from ..log import get_logger
 from ..sockconn import HBIC
@@ -146,9 +145,7 @@ class ServiceCo:
             co.hbic.disconnect("HBI co context error.")
         else:
             if exc_type is not None:
-                if issubclass(
-                    exc_type, (asyncio.CancelledError, futures.CancelledError)
-                ):
+                if issubclass(exc_type, (asyncio.CancelledError)):
                     err_reason = f"HBI service consumer cancellation."
                 else:
                     err_reason = f"HBI service consumer error: {exc_type!s} {exc_val!s}"
