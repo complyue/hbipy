@@ -143,9 +143,13 @@ def gather_exports(root_dir, pkg_path, sn2exps, pkg_only=False):
             init_path = os.path.join(pkg_dir, "__init__.py")
             is_ns_pkg = not os.path.isfile(init_path)
             sub_exps = {}
-            if is_ns_pkg or sub_name.startswith("_"):
+            if is_ns_pkg:
                 # no up-propagation of exports across namespace or internal (named with leading underscore) packages
                 gather_exports(root_dir, sub_pkg_path, sub_exps, pkg_only=True)
+                sn2exps[sub_name] = False, sub_exps
+            elif sub_name.startswith("_"):
+                # no up-propagation of exports from internal sub-package
+                gather_exports(root_dir, sub_pkg_path, sub_exps, pkg_only=False)
                 sn2exps[sub_name] = False, sub_exps
             else:
                 # up-propagate exports for sub-packages with __init__.py defined
