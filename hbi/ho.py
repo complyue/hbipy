@@ -17,14 +17,18 @@ logger = get_logger(__name__)
 class HostingEnd:
     """
     HBI hosting endpoint
+
     """
 
-    def __init__(self, *, po, context: dict):
-        self._po = po
-        self.context = context
-        self._wire = None
-        self.net_ident = None
+    def __init__(self, po):
+        self.po = po
 
+        self._wire = None
+        self.net_ident = "<unwired>"
+
+        self._ctx = None
+
+        self._conn_fut = asyncio.get_running_loop().create_future()
         self._disc_fut = None
 
         self._recv_buffer = None
@@ -33,28 +37,63 @@ class HostingEnd:
         self._landed_queue = deque()
         self._recv_obj_waiters = deque()
 
+    @property
+    def ctx(self):
+        return self._ctx
+
+    @ctx.setter
+    def ctx(self, ctx):
+        ctx["ho4peer"] = self
+        ctx["po2peer"] = self.po
+        self._ctx = ctx
+
+    async def connected(self):
+        await self._conn_fut
+
+    async def co_recv_obj(self):
+        # TODO 
+
+    async def co_recv_data(self, bufs):
+        # TODO 
+
+    async def co_send_code(self, code):
+        po = self.po
+        # TODO add task to passive hosting conversation queue
+
+    async def co_send_data(self, bufs):
+        po = self.po
+        # TODO add task to passive hosting conversation queue
+
     async def disconnect(self, err_reason=None, try_send_peer_err=True):
+        _wire = self._wire
+        if _wire is None:
+            raise asyncio.InvalidStateError(
+                f"HBI {self.net_ident} hosting endpoint not wired yet!"
+            )
+
         disc_fut = self._disc_fut
         if disc_fut is not None:
             if err_reason is not None:
                 logger.error(
                     rf"""
-HBI retry disconnecting {self.net_ident} due to error:
+HBI {self.net_ident} repeated disconnection due to error:
 {err_reason}
 """,
                     stack_info=True,
                 )
-            return await disc_fut
+            await disc_fut
+            return
 
-        disc_fut = self._disc_fut = asyncio.get_running_loop().create_future()
         if err_reason is not None:
             logger.error(
                 rf"""
-HBI disconnecting {self.net_ident} due to error:
+HBI {self.net_ident} disconnecting due to error:
 {err_reason}
 """,
                 stack_info=True,
             )
+
+        disc_fut = self._disc_fut = asyncio.get_running_loop().create_future()
 
         disconn_cb = self.context.get("hbi_disconnecting", None)
         if disconn_cb is not None:
@@ -64,17 +103,19 @@ HBI disconnecting {self.net_ident} due to error:
                     await maybe_coro
             except Exception:
                 logger.warning(
-                    f"HBI disconnecting callback failure ignored.", exc_info=True
-                )
-
-        if err_reason is not None and try_send_peer_err:
-            if self._po is None:
-                logger.warning(
-                    f"Not sending peer error {err_reason!s} as no posting endpoint.",
+                    f"HBI {self.net_ident} disconnecting callback failure ignored.",
                     exc_info=True,
                 )
-            else:
-                await self._po.disconnect(err_reason, try_send_peer_err)
+
+        if self.po is not None:
+            # close posting endpoint (i.e. write eof) before closing the socket
+            await self.po.disconnect(err_reason, try_send_peer_err)
+
+        elif err_reason is not None and try_send_peer_err:
+            logger.warning(
+                f"HBI {self.net_ident} not sending peer error {err_reason!s} as no posting endpoint.",
+                exc_info=True,
+            )
 
         try:
             _wire.transport.close()
@@ -85,52 +126,33 @@ HBI disconnecting {self.net_ident} due to error:
 
         await disc_fut
 
-    def _disconnected(self, exc=None):
-        if exc is not None:
-            logger.warning(f"HBI connection unwired due to error: {exc}")
-
-        # abort pending tasks
-        self._recv_buffer = None  # release this resource
-        if self._recv_obj_waiters:
-            if exc is None:
-                exc = RuntimeError("HBI disconnected")
-            waiters = self._recv_obj_waiters
-            self._recv_obj_waiters = None  # release this resource
-            for waiter in waiters:
-                if waiter.done():
-                    # may have been cancelled etc.
-                    continue
-                waiter.set_exception(exc)
-
+    async def disconnected(self):
         disc_fut = self._disc_fut
         if disc_fut is None:
-            disc_fut = self._disc_fut = asyncio.get_running_loop().create_future()
-        elif not disc_fut.done():
-            disc_fut.set_result(exc)
+            raise asyncio.InvalidStateError(f"HBI {self.net_ident} not disconnecting")
+        await disc_fut
 
-        disconn_cb = self.context.get("hbi_disconnected", None)
-        if disconn_cb is not None:
-            maybe_coro = disconn_cb(exc)
-            if inspect.iscoroutine(maybe_coro):
-                asyncio.create_task(maybe_coro)
+    # should be called by wire protocol
+    def _connected(self, net_ident):
+        self.net_ident = net_ident
 
-    def _peer_eof(self):
-        peer_done_cb = self.context.get("hbi_peer_done", None)
-        if peer_done_cb is not None:
-            maybe_coro = peer_done_cb()
-            if inspect.iscoroutine(maybe_coro):
-                asyncio.create_task(maybe_coro)
+        conn_fut = self._conn_fut
+        assert conn_fut is not None, "?!"
+        if conn_fut.done():
+            assert fut.exception() is None and fut.result() is None, "?!"
+        else:
+            conn_fut.set_result(None)
 
+        self._send_mutex.startup()
+
+    # should be called by wire protocol
     def _data_received(self, chunk):
         # push to buffer
         if chunk:
             self._recv_buffer.append(BytesBuffer(chunk))
 
-        # read wire regarding corun/burst mode and flow ctrl
-        self._read_wire()
+        while True:  # consume as much data as possible from wire
 
-    def _read_wire(self):
-        while True:
             # feed as much buffered data as possible to data sink if present
             while self._data_sink:
                 # make sure data keep flowing in regarding lwm
@@ -237,3 +259,50 @@ HBI disconnecting {self.net_ident} due to error:
                 if not given_to_a_waiter:
                     # put back to queue head if not consumed by a waiter
                     self._landed_queue.appendleft(landed)
+
+    # should be called by wire protocol
+    def _peer_eof(self):
+        # returning True here to prevent the socket from being closed automatically
+        peer_done_cb = self.context.get("hbi_peer_done", None)
+        if peer_done_cb is not None:
+            maybe_coro = peer_done_cb()
+            if inspect.iscoroutine(maybe_coro):
+                # the callback is a coroutine, assuming the socket should not be closed on peer eof
+                asyncio.get_running_loop().create_task(maybe_coro)
+                return True
+            else:
+                # the callback is not coroutine, its return value should reflect its intent
+                return maybe_coro
+        return False  # let the socket be closed automatically
+
+    # should be called by wire protocol
+    def _disconnected(self, exc=None):
+        if exc is not None:
+            logger.warning(
+                f"HBI {self.net_ident} connection unwired due to error: {exc}"
+            )
+
+        # abort pending tasks
+        self._recv_buffer = None  # release this resource
+        if self._recv_obj_waiters:
+            if exc is None:
+                exc = RuntimeError(f"HBI {self.net_ident} disconnected")
+            waiters = self._recv_obj_waiters
+            self._recv_obj_waiters = None  # release this resource
+            for waiter in waiters:
+                if waiter.done():
+                    # may have been cancelled etc.
+                    continue
+                waiter.set_exception(exc)
+
+        disc_fut = self._disc_fut
+        if disc_fut is None:
+            disc_fut = self._disc_fut = asyncio.get_running_loop().create_future()
+        elif not disc_fut.done():
+            disc_fut.set_result(exc)
+
+        disconn_cb = self.context.get("hbi_disconnected", None)
+        if disconn_cb is not None:
+            maybe_coro = disconn_cb(exc)
+            if inspect.iscoroutine(maybe_coro):
+                asyncio.create_task(maybe_coro)

@@ -13,13 +13,13 @@ from .bytesbuf import *
 from .conn import *
 from .context import *
 from .ho import *
+from .interop import *
 from .log import *
 from .po import *
 from .pool import *
 from .proto import *
 from .sendctrl import *
 from .shell import *
-from .sockconn import *
 from .util import *
 from .version import *
 
@@ -35,13 +35,16 @@ __all__ = [
     'BytesBuffer',
 
     # exports from .conn
-    'AbstractHBIC',
+    'HBIC', 'HBIS',
 
     # exports from .context
     'run_in_context',
 
     # exports from .ho
     'HostingEnd',
+
+    # exports from .interop
+    'null', 'true', 'false', 'nan', 'NaN', 'JSOND',
 
     # exports from .log
     'hbi_root_logger', 'get_logger',
@@ -60,9 +63,6 @@ __all__ = [
 
     # exports from .shell
     'HBIConsole',
-
-    # exports from .sockconn
-    'HBIC',
 
     # exports from .util
     'hrdsz', 'hwdsz',
