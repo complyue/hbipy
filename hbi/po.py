@@ -1,13 +1,91 @@
 import asyncio
 import inspect
 from typing import *
+from collections import deque
 
 from .log import *
 from .sendctrl import SendCtrl
 
-__all__ = ["PostingEnd"]
+__all__ = ["Convers", "PostingEnd"]
 
 logger = get_logger(__name__)
+
+
+class Convers:
+    """
+    HBI active conversation at posting end.
+
+    """
+
+    def __init__(self, po):
+        self._po = po
+        self._begin_acked_fut = None
+        self._end_acked_fut = None
+
+    async def response_begin(self):
+        fut = self._begin_acked_fut
+        if fut is None:
+            raise asyncio.InvalidStateError("co_begin not yet sent!")
+        ended = self._end_acked_fut
+        if ended is not None and ended.done():
+            raise asyncio.InvalidStateError("co_end already acked")
+        await fut
+
+    async def response_end(self):
+        fut = self._end_acked_fut
+        if fut is None:
+            raise asyncio.InvalidStateError("co_end not sent!")
+        await fut
+
+    async def begin(self):
+        if self._begin_acked_fut is not None:
+            raise asyncio.InvalidStateError("co_begin already sent!")
+
+        po = self._po
+        assert self in po._coq, "co not in po's coq ?!"
+        await po._send_text(repr(id(self)), b"co_begin")
+
+        self._begin_acked_fut = asyncio.get_running_loop().create_future()
+
+    async def co_send_code(self, code):
+        if self._begin_acked_fut is None:
+            raise asyncio.InvalidStateError("co_begin not yet sent!")
+        po = self._po
+        assert self in po._coq, "co not in po's coq ?!"
+        await po._send_code(code)
+
+    async def co_send_data(self, bufs):
+        if self._begin_acked_fut is None:
+            raise asyncio.InvalidStateError("co_begin not yet sent!")
+        po = self._po
+        assert self in po._coq, "co not in po's coq ?!"
+        await po._send_data(bufs)
+
+    async def co_recv_obj(self):
+        if self._begin_acked_fut is None:
+            raise asyncio.InvalidStateError("co_begin not yet sent!")
+        await self.response_begin()
+
+        # TODO cont. here, where to get ho's recv queue ?
+
+    async def end(self):
+        if self._end_acked_fut is not None:
+            raise asyncio.InvalidStateError("co_end already sent!")
+
+        po = self._po
+        assert self in po._coq, "co not in po's coq ?!"
+        await po._send_text(repr(id(self)), b"co_end")
+
+        self._end_acked_fut = asyncio.get_running_loop().create_future()
+
+    async def __aenter__(self):
+        await self.begin()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        po = self._po
+        if po._wire.connected:
+            await self.end()
 
 
 class PostingEnd:
@@ -24,20 +102,121 @@ class PostingEnd:
         self._disc_fut = None
 
         self._send_mutex = SendCtrl()
-        self._co_mutex = asyncio.Lock()
-        self.co = None
+        self._coq = deque()
+
+    @property
+    def connected_wire(self):
+        wire = self._wire
+        if wire is None:
+            raise asyncio.InvalidStateError("HBI posting endpoint not wired!")
+        if not wire.connected():
+            raise asyncio.InvalidStateError("HBI posting endpoint not connected!")
+        return wire
 
     async def connected(self):
         await self._conn_fut
 
-    async def co(self):
-        # TODO establish active conversation
-        co = ...
+    async def notif(self, code):
+        async with self._send_mutex:
+            await self._send_code(code)
+
+    async def notif_data(self, code, bufs):
+        async with self.co():
+            await self._send_code(code)
+            if bufs is not None:
+                await self._send_data(bufs)
+
+    def co(self):
+        if self._co is not None:
+            raise asyncio.InvalidStateError(
+                f"Previous conversation [{id(self._co)}] still open!"
+            )
+        co = Convers(self)
+        self._coq.append(co)
         return co
 
+    def _co_begin_acked(self, coid):
+        co = self._coq[0]
+        if id(co) != coid:
+            raise asyncio.InvalidStateError(
+                f"Mismatch coid at po end: [{coid}] vs [{id(co)}]"
+            )
+        co._begin_acked_fut.set_result(coid)
+
+    def _co_end_acked(self, coid):
+        co = self._coq.popleft()
+        if id(co) != coid:
+            raise asyncio.InvalidStateError(
+                f"Mismatch coid at po end: [{coid}] vs [{id(co)}]"
+            )
+        co._end_acked_fut.set_result(coid)
+
+    async def _send_code(self, code, wire_dir=b""):
+        # use a generator function to pull code from hierarchy
+        def pull_code(container):
+            for mc in container:
+                if inspect.isgenerator(mc):
+                    yield from pull_code(mc)
+                else:
+                    yield mc
+
+        if inspect.isgenerator(code):
+            for c in pull_code(code):
+                await self._send_text(c, wire_dir)
+        else:
+            await self._send_text(code, wire_dir)
+
+    async def _send_data(self, bufs):
+        assert bufs is not None
+
+        # use a generator function to pull all buffers from hierarchy
+
+        def pull_from(boc):
+            b = cast_to_src_buffer(
+                boc
+            )  # this static method can be overridden by subclass
+            if b is not None:
+                yield b
+                return
+            for boc1 in boc:
+                yield from pull_from(boc1)
+
+        for buf in pull_from(bufs):
+            max_chunk_size = self.high_water_mark_send
+            remain_size = len(buf)
+            send_from_idx = 0
+            while remain_size > max_chunk_size:
+                await self._send_buffer(
+                    buf[send_from_idx : send_from_idx + max_chunk_size]
+                )
+                send_from_idx += max_chunk_size
+                remain_size -= max_chunk_size
+            if remain_size > 0:
+                await self._send_buffer(buf[send_from_idx:])
+
+    async def _send_text(self, code, wire_dir=b""):
+        if isinstance(code, bytes):
+            payload = code
+        elif isinstance(code, str):
+            payload = code.encode("utf-8")
+        else:
+            # try convert to json and send
+            payload = json.dumps(code).encode("utf-8")
+
+        # check connected & wait for flowing for each code packet
+        wire = self.connected_wire()
+        await self._send_mutex.flowing()
+        wire.transport.writelines([b"[%d#%s]" % (len(payload), wire_dir), payload])
+
+    async def _send_buffer(self, buf):
+        # check connected & wait for flowing for each single buffer
+        wire = self.connected_wire()
+        await self._send_mutex.flowing()
+        wire.transport.write(buf)
+
     async def disconnect(self, err_reason=None, try_send_peer_err=True):
-        _wire = self._wire
-        if _wire is None:
+        wire = self._wir
+        if wire is None:
             raise asyncio.InvalidStateError(
                 f"HBI {self.net_ident} posting endpoint not wired yet!"
             )
@@ -78,7 +257,7 @@ HBI {self.net_ident} disconnecting due to error:
                 )
 
         try:
-            if _wire.transport.is_closing():
+            if wire.transport.is_closing():
                 logger.warning(
                     f"HBI {self.net_ident} transport already closing.", stack_info=True
                 )
@@ -101,7 +280,7 @@ HBI {self.net_ident} disconnecting due to error:
                 # close outgoing channel
                 # This method can raise NotImplementedError if the transport (e.g. SSL) doesn’t support half-closed connections.
                 # TODO handle SSL cases once supported
-                _wire.transport.write_eof()
+                wire.transport.write_eof()
 
             disc_fut.set_result(None)
         except Exception as exc:

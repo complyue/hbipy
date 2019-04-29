@@ -34,7 +34,17 @@ async def fetch_next_job():
 async def reschedule_job(job):
     ...
 
+po2peer: hbi.PostingEnd = None
+ho4peer: hbi.HostingEnd = None
+
+def __hbi_init__(po, ho):
+    global po2peer: hbi.PostingEnd
+    global ho4peer: hbi.HostingEnd
+
+    po2peer, ho4peer = po, ho
+
 async def job_done(job_result):
+    assert po2peer is not None and ho4peer is not None
     ...
 
 async def work_out():
@@ -171,6 +181,15 @@ import asyncio, hbi
 
 if '__job_context__' == __name__:
 
+    po2peer: hbi.PostingEnd = None
+    ho4peer: hbi.HostingEnd = None
+
+    def __hbi_init__(po, ho):
+        global po2peer: hbi.PostingEnd
+        global ho4peer: hbi.HostingEnd
+
+        po2peer, ho4peer = po, ho
+
     async def do_job(action, data_len):
         global po2peer: hbi.PostingEnd
         global ho4peer: hbi.HostingEnd
@@ -200,10 +219,12 @@ else:
     serving_addr = {'host': '0.0.0.0', 'port': 1234}
 
     async def serve_jobs():
-        hbis = hbi.HBIS(serving_addr, lambda po, ho: runpy.run_module(
-            mod_name=__name__,
-            init_globals={'po2peer': po, 'ho4peer': ho}, 
-            run_name='__job_context__',
+        hbis = hbi.HBIS(
+            serving_addr,
+            lambda po, ho: runpy.run_module(
+                mod_name=__name__,  # reuse this module file
+                run_name='__job_context__',  # distinguish by run_name
+            ),  # create an isolated context for each consumer connection
         )
         await hbis.serve_until_closed()
 

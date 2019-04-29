@@ -43,18 +43,21 @@ class HostingEnd:
 
     @ctx.setter
     def ctx(self, ctx):
-        ctx["ho4peer"] = self
-        ctx["po2peer"] = self.po
+        init_magic = ctx.get("__hbi_init__", None)
+        if init_magic is not None:
+            init_magic(self.po, self)
         self._ctx = ctx
 
     async def connected(self):
         await self._conn_fut
 
     async def co_recv_obj(self):
-        # TODO 
+        # TODO
+        pass
 
     async def co_recv_data(self, bufs):
-        # TODO 
+        # TODO
+        pass
 
     async def co_send_code(self, code):
         po = self.po
