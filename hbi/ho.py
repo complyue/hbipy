@@ -1,11 +1,8 @@
 import asyncio
 import inspect
-from collections import deque
 from typing import *
 
 from ._details import *
-from .buflist import *
-from .bytesbuf import *
 from .context import run_in_context
 from .log import *
 
@@ -20,8 +17,17 @@ class HostingEnd:
 
     """
 
-    def __init__(self, po):
+    def __init__(self, po, app_queue_high: int = 100, app_queue_low: int = 50):
+        assert (
+            0 < app_queue_low < app_queue_high
+        ), f"Invalid app queue watermarks: {app_queue_low}~{app_queue_high}"
+        assert (
+            0 < wire_buf_low < wire_buf_high
+        ), f"Invalid wire buffer watermarks: {wire_buf_low}~{wire_buf_high}"
+
         self.po = po
+        self.app_queue_high = app_queue_high
+        self.app_queue_low = app_queue_low
 
         self._wire = None
         self.net_ident = "<unwired>"
@@ -31,11 +37,20 @@ class HostingEnd:
         self._conn_fut = asyncio.get_running_loop().create_future()
         self._disc_fut = None
 
-        self._recv_buffer = None
-        self._data_sink = None
+        # hosting thread and its task queue
+        self._hoth = None
+        self._hotq = asyncio.Queue()
 
-        self._landed_queue = deque()
-        self._recv_obj_waiters = deque()
+        # queue for received objects
+        self._horq = asyncio.Queue()
+
+        # for the active posting conversation
+        # hold a reference to po._coq head during co_ack_begin/co_ack_end from remote peer
+        self._po_co = None
+
+        # for the passive hosting conversation
+        # hold the coid value during co_begin/co_end from remote peer
+        self._ho_coid = None
 
     @property
     def ctx(self):
@@ -52,20 +67,39 @@ class HostingEnd:
         await self._conn_fut
 
     async def co_recv_obj(self):
-        # TODO
-        pass
+        obj = await self._recv_obj()
+        if self._ho_coid is None:
+            raise asyncio.InvalidStateError(f"Object received out of conversation!")
+        return obj
+
+    async def _recv_obj(self):
+        if self._horq.qsize() <= self.app_queue_low:  # flow ctrl
+            self._wire.transport.resume_reading()
+
+        return await self._horq.get()
 
     async def co_recv_data(self, bufs):
-        # TODO
-        pass
+        if self._ho_coid is None:
+            raise asyncio.InvalidStateError("No hosting conversation!")
+
+        # TODO resume by low watermark
+        self._wire.transport.resume_reading()
+
+        await self._recv_data(bufs)
 
     async def co_send_code(self, code):
+        if self._ho_coid is None:
+            raise asyncio.InvalidStateError("No hosting conversation!")
+
         po = self.po
-        # TODO add task to passive hosting conversation queue
+        await po._send_code(code, b"co_recv")
 
     async def co_send_data(self, bufs):
+        if self._ho_coid is None:
+            raise asyncio.InvalidStateError("No hosting conversation!")
+
         po = self.po
-        # TODO add task to passive hosting conversation queue
+        await p._send_data(bufs)
 
     async def disconnect(self, err_reason=None, try_send_peer_err=True):
         _wire = self._wire
@@ -146,137 +180,298 @@ HBI {self.net_ident} disconnecting due to error:
         else:
             conn_fut.set_result(None)
 
-        self._send_mutex.startup()
+        assert self._hoth is None, "hosting task created already ?!"
+        self._hoth = asyncio.create_task(self._ho_thread())
 
-    # should be called by wire protocol
-    def _data_received(self, chunk):
-        # push to buffer
-        if chunk:
-            self._recv_buffer.append(BytesBuffer(chunk))
+    async def _ho_thread(self):
+        """
+        Use a green thread to guarantee serial execution of packets transfered over the wire.
 
-        while True:  # consume as much data as possible from wire
+        Though the code from a packet can spawn new threads by calling `asyncio.create_task()` during landing.
 
-            # feed as much buffered data as possible to data sink if present
-            while self._data_sink:
-                # make sure data keep flowing in regarding lwm
-                if self._recv_water_pos() <= self.low_water_mark_recv:
-                    self._resume_recv()
+        """
 
-                if self._recv_buffer is None:
-                    # unexpected disconnect
-                    self._data_sink(None)
-                    return
-
-                chunk = self._recv_buffer.popleft()
-                if not chunk:
-                    # no more buffered data, wire is empty, return
-                    return
-                self._data_sink(chunk)
-
-            # try consume all landed but pending consumed objects first
-            while self._landed_queue:
-                while self._recv_obj_waiters:
-                    obj_waiter = self._recv_obj_waiters.popleft()
-                    if obj_waiter.done():
-                        assert (
-                            obj_waiter.cancelled() or obj_waiter.exception is not None
-                        ), "got result already ?!"
-                        # ignore a waiter whether it is cancelled or met other exceptions
-                        continue  # find next waiter to receive the landed value
-                    landed = self._landed_queue.popleft()
-                    if len(landed) == 3:
-                        co_task = landed[1]
-                        chain_future(co_task, obj_waiter)
-                    else:
-                        assert len(landed) == 2, "?!"
-                        if landed[0] is None:
-                            obj_waiter.set_result(landed[1])
-                        else:
-                            obj_waiter.set_exception(landed[0])
-                    if not self._landed_queue:
-                        break
-                if not self._recv_obj_waiters:
+        while True:  # run each queued coro in order
+            try:
+                coro = await self._hotq.get()
+            except asyncio.CancelledError:  # until disconnected
+                assert (
+                    self._disc_fut is not None
+                ), "hotq fetching cancelled while not disconnecting ?!"
+                break
+            try:
+                # run this coro by awaiting it
+                await coro
+            except asyncio.CancelledError:
+                if self._disc_fut is not None:
+                    # disconnecting, stop this hosting thread
                     break
+                logger.warning(
+                    f"HBI {self.net_ident!s} a hosted task cancelled: {coro}",
+                    exc_info=True,
+                )
+            except Exception as exc:
+                logger.error(
+                    f"HBI {self.net_ident!s} a hosted task failed: {coro}",
+                    exc_info=True,
+                )
+                self.disconnect(exc)
 
-            while True:
-                if self._disconnecting:
-                    return
+    async def _ack_co_begin(self, coid: str):
+        if self._ho_coid is not None:
+            raise asyncio.InvalidStateError("Unclean co_begin!")
+        else:
+            await self.po._send_text(coid, b"co_ack_begin")
+            self._ho_coid = coid
 
-                # ctrl incoming flow regarding hwm/lwm
-                buffered_amount = self._recv_water_pos()
-                if buffered_amount > self.high_water_mark_recv:
-                    self._pause_recv()
-                elif buffered_amount <= self.low_water_mark_recv:
-                    self._resume_recv()
+    async def _ack_co_end(self, coid: str):
+        if self._ho_coid != coid:
+            raise asyncio.InvalidStateError("Unclean co_end!")
+        else:
+            await self.po._send_text(coid, b"co_ack_end")
+            self._ho_coid = None
 
-                # land any packet available from wire
-                landed = self._land_one()
-                if landed is None:
-                    # no more packet to land
-                    return
-                if len(landed) == 1:
-                    # this landed packet is not interesting to application layer
-                    continue
-                if len(landed) not in (2, 3):
-                    raise RuntimeError(
-                        f"land result is {type(landed).__name__} of {len(landed)} ?!"
-                    )
+    async def _co_begin_acked(self, coid: str):
+        if self._po_co is not None:
+            raise asyncio.InvalidStateError("Unclean co_ack_begin!")
 
-                if self._co_remote_ack is None and self._co_local_ack is None:
-                    # ignore landed result if not in active or passive corun conversation
-                    pass
-                else:
-                    # queue landed packet
-                    self._landed_queue.append(landed)
+        self._po_co = self.po._co_begin_acked(coid)
 
-                    if len(self._landed_queue) >= self.app_queue_size:
-                        # stop reading wire and pause network recv if landing queue becomes big
-                        self._pause_recv()
+    async def _co_end_acked(self, coid: str):
+        if self._po_co is None:
+            raise asyncio.InvalidStateError("Unclean co_ack_end!")
+
+        co = self.po._co_end_acked(coid)
+        if co is not self._po_co:
+            raise asyncio.InvalidStateError("Mismatched co_ack_end!")
+
+        self._po_co = None
+
+    async def _co_send_back(self, obj):
+        if inspect.isawaitable(obj):
+            obj = await obj
+        await self._send_text(repr(obj), b"co_recv")
+
+    async def _co_recv_landed(self, obj):
+        if self._po_co is None and self._ho_coid is None:
+            raise asyncio.InvalidStateError("No conversation to recv!")
+
+        if inspect.isawaitable(obj):
+            obj = await obj
+
+        rq = self._horq
+        rq.put_nowait(obj)
+
+        if rq.qsize() >= self.app_queue_high:  # flow ctrl
+            self._wire.transport.pause_reading()
+
+    def _land_packet(self, code, wire_dir) -> Optional[tuple]:
+        if "co_begin" == wire_dir:
+
+            self._hotq.put_nowait(self._ack_co_begin(code))
+
+        elif "co_recv" == wire_dir:
+            # peer is sending a result object to be received by this end
+
+            landed = self._land_code(code)
+            self._hotq.put_nowait(self._co_recv_landed(landed))
+
+        elif "co_send" == wire_dir:
+            # peer is requesting this end to send landed result back
+
+            landed = self._land_code(code)
+            self._hotq.put_nowait(self._co_send_back(landed))
+
+        elif "co_end" == wire_dir:
+
+            self._hotq.put_nowait(self._ack_co_end(code))
+
+        elif "co_ack_begin" == wire_dir:
+
+            self._hotq.put_nowait(self._co_begin_acked(code))
+
+        elif "co_ack_end" == wire_dir:
+
+            self._hotq.put_nowait(self._co_end_acked(code))
+
+        elif "err" == wire_dir:
+            # peer error
+
+            self._handle_peer_error(code)
+
+        else:
+
+            exc = RuntimeError(f"HBI unknown wire directive [{wire_dir}]")
+            self._handle_landing_error(exc)
+
+    def _land_code(self, code):
+        # allow customization of code landing
+        lander = self.context.get("__hbi_land__", None)
+        if lander is not None:
+            assert callable(lander), "non-callable __hbi_land__ defined ?!"
+            try:
+
+                landed = lander(code)
+                if NotImplemented is not landed:
+                    # custom lander can return `NotImplemented` to proceed standard landing
+                    return landed
+
+            except Exception as exc:
+                logger.debug(
+                    rf"""
+HBI {self.net_info}, error custom landing code:
+--CODE--
+{code!s}
+--====--
+""",
+                    exc_info=True,
+                )
+                self._handle_landing_error(exc)
+                raise
+
+        # standard landing
+        defs = {}
+        try:
+
+            landed = run_in_context(code, self.context, defs)
+            return landed
+
+        except Exception as exc:
+            logger.debug(
+                rf"""
+HBI {self.net_ident}, error landing code:
+--CODE--
+{code!s}
+--DEFS--
+{defs!r}
+--====--
+""",
+                exc_info=True,
+            )
+            self._handle_landing_error(exc)
+            raise
+
+    async def _recv_data(self, bufs):
+        fut = asyncio.get_running_loop().create_future()
+
+        # use a generator function to pull all buffers from hierarchy
+        def pull_from(boc):
+            b = cast_to_tgt_buffer(
+                boc
+            )  # this static method can be overridden by subclass
+            if b:
+                yield b
+            else:
+                for boc1 in boc:
+                    yield from pull_from(boc1)
+
+        pos = 0
+        buf = None
+
+        buf_puller = pull_from(bufs)
+
+        def data_sink(chunk):
+            nonlocal pos
+            nonlocal buf
+
+            if chunk is None:
+                if not fut.done():
+                    fut.set_exception(RuntimeError("HBI disconnected"))
+                self._wire._end_offload(None, data_sink)
+
+            try:
+                while True:
+                    if buf is not None:
+                        assert pos < len(buf)
+                        # current buffer not filled yet
+                        if not chunk or len(chunk) <= 0:
+                            # data expected by buf, and none passed in to this call,
+                            # return and expect next call into here
+                            self._resume_recv()
+                            return
+                        available = len(chunk)
+                        needs = len(buf) - pos
+                        if available < needs:
+                            # add to current buf
+                            new_pos = pos + available
+                            buf[pos:new_pos] = chunk.data()
+                            pos = new_pos
+                            # all data in this chunk has been exhausted while current buffer not filled yet
+                            # return now and expect succeeding data chunks to come later
+                            self._resume_recv()
+                            return
+                        # got enough or more data in this chunk to filling current buf
+                        buf[pos:] = chunk.data(0, needs)
+                        # slice chunk to remaining data
+                        chunk.consume(needs)
+                        # clear current buffer pointer
+                        buf = None
+                        pos = 0
+                        # continue to process rest data in chunk, even chunk is empty now, still need to proceed for
+                        # finish condition check
+
+                    # pull next buf to fill
+                    try:
+                        buf = next(buf_puller)
+                        pos = 0
+                        if len(buf) == 0:  # special case for some empty data
+                            buf = None
+                    except StopIteration as ret:
+                        # all buffers in hierarchy filled, finish receiving
+                        self._wire._end_offload(chunk, data_sink)
+                        # resolve the future
+                        if not fut.done():
+                            fut.set_result(bufs)
+                        # and done
                         return
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "HBI buffer source raised exception"
+                        ) from exc
+            except Exception as exc:
+                self._handle_wire_error(exc)
+                if not fut.done():
+                    fut.set_exception(exc)
 
-                # try give queue head to a waiter
-                if not self._recv_obj_waiters or not self._landed_queue:
-                    # not possible
-                    continue
-                landed = self._landed_queue.popleft()
-                given_to_a_waiter = False
-                while self._recv_obj_waiters:
-                    obj_waiter = self._recv_obj_waiters.popleft()
-                    if obj_waiter.done():
-                        assert (
-                            obj_waiter.cancelled() or obj_waiter.exception is not None
-                        ), "got result already ?!"
-                        # ignore a waiter whether it is cancelled or met other exceptions
-                        continue  # find next waiter to receive the landed value
-                    if len(landed) == 3:
-                        co_task = landed[1]
-                        chain_future(co_task, obj_waiter)
-                    else:
-                        assert len(landed) == 2, "?!"
-                        if landed[0] is None:
-                            obj_waiter.set_result(landed[1])
-                        else:
-                            obj_waiter.set_exception(landed[0])
-                    given_to_a_waiter = True
-                    break  # landed value given to a waiter, done for it
-                if not given_to_a_waiter:
-                    # put back to queue head if not consumed by a waiter
-                    self._landed_queue.appendleft(landed)
+        self._wire._begin_offload(data_sink)
+
+        return await fut
 
     # should be called by wire protocol
     def _peer_eof(self):
+        if self._po_co is not None or self._ho_coid is not None:
+            # make sure coroutines receiving from current conversation get the exception, or they'll leak
+            exc = asyncio.InvalidStateError(
+                "Premature peer EOF before conversation ended."
+            )
+            if self._po_co is not None:
+                for fut in self._po_co._co_receivers:
+                    if not fut.done():
+                        fut.set_exception(exc)
+            if self._ho_coid is not None:
+                for fut in self._ho_receivers:
+                    if not fut.done():
+                        fut.set_exception(exc)
+            raise exc
+
         # returning True here to prevent the socket from being closed automatically
         peer_done_cb = self.context.get("hbi_peer_done", None)
         if peer_done_cb is not None:
             maybe_coro = peer_done_cb()
             if inspect.iscoroutine(maybe_coro):
                 # the callback is a coroutine, assuming the socket should not be closed on peer eof
-                asyncio.get_running_loop().create_task(maybe_coro)
+                self._hotq.put_nowait(maybe_coro)
                 return True
             else:
                 # the callback is not coroutine, its return value should reflect its intent
                 return maybe_coro
         return False  # let the socket be closed automatically
+
+    def _handle_landing_error(self, exc):
+        self.disconnect(exc)
+
+    def _handle_peer_error(self, err_reaon):
+        self.disconnect(f"HBI peer error: {err_reaon}", False)
 
     # should be called by wire protocol
     def _disconnected(self, exc=None):
@@ -285,27 +480,41 @@ HBI {self.net_ident} disconnecting due to error:
                 f"HBI {self.net_ident} connection unwired due to error: {exc}"
             )
 
-        # abort pending tasks
-        self._recv_buffer = None  # release this resource
-        if self._recv_obj_waiters:
+        if self._po_co is not None:
+            # abort pending receivers from posting conversation
             if exc is None:
                 exc = RuntimeError(f"HBI {self.net_ident} disconnected")
-            waiters = self._recv_obj_waiters
-            self._recv_obj_waiters = None  # release this resource
-            for waiter in waiters:
-                if waiter.done():
-                    # may have been cancelled etc.
+            for fut in self._po_co._co_receivers:
+                if fut.done():  # may have been cancelled etc.
                     continue
-                waiter.set_exception(exc)
+                fut.set_exception(exc)
+
+        if self._ho_coid is not None:
+            # abort pending receivers from hosting conversation
+            if exc is None:
+                exc = RuntimeError(f"HBI {self.net_ident} disconnected")
+            for fut in self._ho_receivers:
+                if fut.done():  # may have been cancelled etc.
+                    continue
+                fut.set_exception(exc)
 
         disc_fut = self._disc_fut
         if disc_fut is None:
             disc_fut = self._disc_fut = asyncio.get_running_loop().create_future()
-        elif not disc_fut.done():
+        if not disc_fut.done():
             disc_fut.set_result(exc)
 
         disconn_cb = self.context.get("hbi_disconnected", None)
         if disconn_cb is not None:
             maybe_coro = disconn_cb(exc)
             if inspect.iscoroutine(maybe_coro):
-                asyncio.create_task(maybe_coro)
+                self._hotq.put_nowait(maybe_coro)
+
+        ho_task = self._hot
+        if ho_task is not None:
+            # stop hosting thread after all tasks finished
+
+            async def stop_ho_thread():
+                ho_task.cancel()
+
+            self._hotq.put_nowait(stop_ho_thread())

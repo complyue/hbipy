@@ -1,91 +1,15 @@
 import asyncio
 import inspect
-from typing import *
 from collections import deque
+from typing import *
 
+from .co import *
 from .log import *
 from .sendctrl import SendCtrl
 
-__all__ = ["Convers", "PostingEnd"]
+__all__ = ["PostingEnd"]
 
 logger = get_logger(__name__)
-
-
-class Convers:
-    """
-    HBI active conversation at posting end.
-
-    """
-
-    def __init__(self, po):
-        self._po = po
-        self._begin_acked_fut = None
-        self._end_acked_fut = None
-
-    async def response_begin(self):
-        fut = self._begin_acked_fut
-        if fut is None:
-            raise asyncio.InvalidStateError("co_begin not yet sent!")
-        ended = self._end_acked_fut
-        if ended is not None and ended.done():
-            raise asyncio.InvalidStateError("co_end already acked")
-        await fut
-
-    async def response_end(self):
-        fut = self._end_acked_fut
-        if fut is None:
-            raise asyncio.InvalidStateError("co_end not sent!")
-        await fut
-
-    async def begin(self):
-        if self._begin_acked_fut is not None:
-            raise asyncio.InvalidStateError("co_begin already sent!")
-
-        po = self._po
-        assert self in po._coq, "co not in po's coq ?!"
-        await po._send_text(repr(id(self)), b"co_begin")
-
-        self._begin_acked_fut = asyncio.get_running_loop().create_future()
-
-    async def co_send_code(self, code):
-        if self._begin_acked_fut is None:
-            raise asyncio.InvalidStateError("co_begin not yet sent!")
-        po = self._po
-        assert self in po._coq, "co not in po's coq ?!"
-        await po._send_code(code)
-
-    async def co_send_data(self, bufs):
-        if self._begin_acked_fut is None:
-            raise asyncio.InvalidStateError("co_begin not yet sent!")
-        po = self._po
-        assert self in po._coq, "co not in po's coq ?!"
-        await po._send_data(bufs)
-
-    async def co_recv_obj(self):
-        if self._begin_acked_fut is None:
-            raise asyncio.InvalidStateError("co_begin not yet sent!")
-        await self.response_begin()
-
-        # TODO cont. here, where to get ho's recv queue ?
-
-    async def end(self):
-        if self._end_acked_fut is not None:
-            raise asyncio.InvalidStateError("co_end already sent!")
-
-        po = self._po
-        assert self in po._coq, "co not in po's coq ?!"
-        await po._send_text(repr(id(self)), b"co_end")
-
-        self._end_acked_fut = asyncio.get_running_loop().create_future()
-
-    async def __aenter__(self):
-        await self.begin()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        po = self._po
-        if po._wire.connected:
-            await self.end()
 
 
 class PostingEnd:
@@ -131,17 +55,20 @@ class PostingEnd:
             raise asyncio.InvalidStateError(
                 f"Previous conversation [{id(self._co)}] still open!"
             )
-        co = Convers(self)
+        co = Conver(self)
         self._coq.append(co)
         return co
 
     def _co_begin_acked(self, coid):
+        if not self._coq:
+            raise asyncio.InvalidStateError("No po co to ack?!")
         co = self._coq[0]
         if id(co) != coid:
             raise asyncio.InvalidStateError(
                 f"Mismatch coid at po end: [{coid}] vs [{id(co)}]"
             )
-        co._begin_acked_fut.set_result(coid)
+        co._begin_acked(coid)
+        return co
 
     def _co_end_acked(self, coid):
         co = self._coq.popleft()
@@ -149,7 +76,8 @@ class PostingEnd:
             raise asyncio.InvalidStateError(
                 f"Mismatch coid at po end: [{coid}] vs [{id(co)}]"
             )
-        co._end_acked_fut.set_result(coid)
+        co._end_acked(coid)
+        return co
 
     async def _send_code(self, code, wire_dir=b""):
         # use a generator function to pull code from hierarchy

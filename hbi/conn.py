@@ -86,12 +86,23 @@ asyncio.run(work_out())
     """
 
     def __init__(
-        self, addr, ctx, *, app_queue_size: int = 200, net_opts: Optional[dict] = None
+        self,
+        addr,
+        ctx,
+        *,
+        app_queue_high: int = 200,
+        app_queue_low: int = 100,
+        wire_buf_high=50 * 1024 * 1024,
+        wire_buf_low=10 * 1024 * 1024,
+        net_opts: Optional[dict] = None,
     ):
         self.addr = addr
         self.ctx = ctx
 
-        self.app_queue_size = app_queue_size
+        self.app_queue_high = app_queue_high
+        self.app_queue_low = app_queue_low
+        self.wire_buf_high = wire_buf_high
+        self.wire_buf_low = wire_buf_low
         self.net_opts = net_opts if net_opts is not None else {}
 
         if isinstance(self.addr, (str, bytes)):
@@ -135,9 +146,9 @@ asyncio.run(work_out())
             if self.ctx is None:  # posting only
                 ho = None
             else:
-                ho = HostingEnd(po)
+                ho = HostingEnd(po, self.app_queue_high, self.app_queue_low)
                 ho.ctx = self.ctx
-            return SocketWire(po, ho)
+            return SocketWire(po, ho, self.wire_buf_high, self.wire_buf_low)
 
         if isinstance(self.addr, (str, bytes)):
             # UNIX domain socket
@@ -239,13 +250,19 @@ else:
         addr,
         context_factory,
         *,
-        app_queue_size: int = 100,
+        app_queue_high: int = 100,
+        app_queue_low: int = 50,
+        wire_buf_high=20 * 1024 * 1024,
+        wire_buf_low=6 * 1024 * 1024,
         net_opts: Optional[dict] = None,
     ):
         self.addr = addr
         self.context_factory = context_factory
 
-        self.app_queue_size = app_queue_size
+        self.app_queue_high = app_queue_high
+        self.app_queue_low = app_queue_low
+        self.wire_buf_high = wire_buf_high
+        self.wire_buf_low = wire_buf_low
         self.net_opts = net_opts if net_opts is not None else {}
 
         if isinstance(self.addr, (str, bytes)):
@@ -266,9 +283,9 @@ else:
 
         def ProtocolFactory():
             po = PostingEnd()
-            ho = HostingEnd(po)
+            ho = HostingEnd(po, self.app_queue_high, self.app_queue_low)
             ho.ctx = self.context_factory(po=po, ho=ho)
-            return SocketWire(po, ho)
+            return SocketWire(po, ho, self.wire_buf_high, self.wire_buf_low)
 
         if isinstance(self.addr, (str, bytes)):
             # UNIX domain socket
