@@ -51,12 +51,7 @@ class PostingEnd:
                 await self._send_data(bufs)
 
     def co(self):
-        if self._co is not None:
-            raise asyncio.InvalidStateError(
-                f"Previous conversation [{id(self._co)}] still open!"
-            )
         co = Conver(self)
-        self._coq.append(co)
         return co
 
     def _co_begin_acked(self, coid):

@@ -40,10 +40,20 @@ class Conver:
             raise asyncio.InvalidStateError("co_begin already sent!")
 
         po = self._po
-        assert self in po._coq, "co not in po's coq ?!"
-        await po._send_text(repr(id(self)), b"co_begin")
+        if po._coq:
+            last_co = po._coq[-1]
+            if last_co._end_acked_fut is not None:
+                raise asyncio.InvalidStateError("po has a co open!")
 
         self._begin_acked_fut = asyncio.get_running_loop().create_future()
+
+        po._coq.append(self)
+
+        try:
+            await po._send_text(repr(id(self)), b"co_begin")
+        except Exception as exc:
+            logger.error("Error sending co_begin.", exc_info=True)
+            self._begin_acked_fut.set_exception(exc)
 
     def _begin_acked(self, coid):
         if repr(id(self)) != coid:
@@ -108,9 +118,14 @@ class Conver:
 
         po = self._po
         assert self in po._coq, "co not in po's coq ?!"
-        await po._send_text(repr(id(self)), b"co_end")
 
         self._end_acked_fut = asyncio.get_running_loop().create_future()
+
+        try:
+            await po._send_text(repr(id(self)), b"co_end")
+        except Exception as exc:
+            logger.error("Error sending co_end.", exc_info=True)
+            self._end_acked_fut.set_exception(exc)
 
     async def __aenter__(self):
         await self.begin()
