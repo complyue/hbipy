@@ -79,15 +79,17 @@ class Conver:
     async def send_code(self, code):
         if self._begin_acked_fut is None:
             raise asyncio.InvalidStateError("co_begin not yet sent!")
+
         po = self._po
-        assert self in po._coq, "co not in po's coq ?!"
+        assert self is po._coq[-1], "co not tail of po's coq ?!"
         await po._send_code(code)
 
     async def send_data(self, bufs):
         if self._begin_acked_fut is None:
             raise asyncio.InvalidStateError("co_begin not yet sent!")
+
         po = self._po
-        assert self in po._coq, "co not in po's coq ?!"
+        assert self is po._coq[-1], "co not tail of po's coq ?!"
         await po._send_data(bufs)
 
     async def recv_obj(self):
@@ -95,29 +97,37 @@ class Conver:
             raise asyncio.InvalidStateError("co_begin not yet sent!")
         await self.response_begin()
 
-        return await self._po._wire.ho._recv_obj()
+        po = self._po
+        assert self is po._coq[0], "co not head of po's coq ?!"
+        return await po._wire.ho._recv_obj()
 
     async def recv_data(self, bufs):
         if self._begin_acked_fut is None:
             raise asyncio.InvalidStateError("co_begin not yet sent!")
         await self.response_begin()
 
-        await self._po._wire.ho._recv_data(bufs)
+        po = self._po
+        assert self is po._coq[0], "co not head of po's coq ?!"
+        await po._wire.ho._recv_data(bufs)
 
     async def get_obj(self, code):
         if self._begin_acked_fut is None:
             raise asyncio.InvalidStateError("co_begin not yet sent!")
+
         po = self._po
-        assert self in po._coq, "co not in po's coq ?!"
+        assert self is po._coq[0], "co not head of po's coq ?!"
         await po._send_text(code, b"co_send")
+
         return await self.recv_obj()
 
     async def end(self):
+        if self._begin_acked_fut is None:
+            raise asyncio.InvalidStateError("co_begin not sent!")
         if self._end_acked_fut is not None:
             raise asyncio.InvalidStateError("co_end already sent!")
 
         po = self._po
-        assert self is po._coq[-1], "open co not the tail of po's coq ?!"
+        assert self is po._coq[-1], "co not tail of po's coq ?!"
 
         self._end_acked_fut = asyncio.get_running_loop().create_future()
 

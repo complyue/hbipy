@@ -3,6 +3,7 @@ import inspect
 from typing import *
 
 from ._details import *
+from .aio import *
 from .context import run_in_context
 from .log import *
 
@@ -36,7 +37,7 @@ class HostingEnd:
         self._hott = None
 
         # queue for received objects
-        self._horq = asyncio.Queue(app_queue_size)
+        self._horq = CancellableQueue(app_queue_size)
 
         # for the active posting conversation
         # hold a reference to po._coq head during co_ack_begin/co_ack_end from remote peer
@@ -169,7 +170,7 @@ HBI {self.net_ident} disconnecting due to error:
         else:
             conn_fut.set_result(None)
 
-        assert self._hoth is None, "hosting task created already ?!"
+        assert self._hoth is None, "hosting green-thread created already ?!"
         self._hoth = asyncio.create_task(self._ho_thread())
 
     async def _ho_thread(self):
@@ -464,19 +465,11 @@ HBI {self.net_ident}, error landing code:
     # should be called by wire protocol
     def _peer_eof(self):
         if self._po_co is not None or self._ho_coid is not None:
-            # make sure coroutines receiving from current conversation get the exception, or they'll leak
             exc = asyncio.InvalidStateError(
                 "Premature peer EOF before conversation ended."
             )
-            if self._po_co is not None:
-                for fut in self._po_co._co_receivers:
-                    if not fut.done():
-                        fut.set_exception(exc)
-            if self._ho_coid is not None:
-                for fut in self._ho_receivers:
-                    if not fut.done():
-                        fut.set_exception(exc)
-            raise exc
+            self.disconnect(exc)  # trigger disconnection
+            return False
 
         # returning True here to prevent the socket from being closed automatically
         peer_done_cb = self.context.get("hbi_peer_done", None)
@@ -504,36 +497,20 @@ HBI {self.net_ident}, error landing code:
                 f"HBI {self.net_ident} connection unwired due to error: {exc}"
             )
 
-        if self._po_co is not None:
-            # abort pending receivers from posting conversation
-            if exc is None:
-                exc = RuntimeError(f"HBI {self.net_ident} disconnected")
-            for fut in self._po_co._co_receivers:
-                if fut.done():  # may have been cancelled etc.
-                    continue
-                fut.set_exception(exc)
-
-        if self._ho_coid is not None:
-            # abort pending receivers from hosting conversation
-            if exc is None:
-                exc = RuntimeError(f"HBI {self.net_ident} disconnected")
-            for fut in self._ho_receivers:
-                if fut.done():  # may have been cancelled etc.
-                    continue
-                fut.set_exception(exc)
-
         disc_fut = self._disc_fut
         if disc_fut is None:
             disc_fut = self._disc_fut = asyncio.get_running_loop().create_future()
         if not disc_fut.done():
             disc_fut.set_result(exc)
 
+        self._horq.cancel_all(exc)
+
+        hoth = self._hoth
+        if hoth is not None:
+            hoth.cancel()
+
         disconn_cb = self.context.get("hbi_disconnected", None)
         if disconn_cb is not None:
             maybe_coro = disconn_cb(exc)
             if inspect.iscoroutine(maybe_coro):
                 asyncio.get_running_loop().create_task(maybe_coro)
-
-        ho_thread = self._hoth
-        if ho_thread is not None:
-            ho_thread.cancel()
