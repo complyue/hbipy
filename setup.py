@@ -9,10 +9,11 @@ os.putenv("COPYFILE_DISABLE", "true")
 
 root = os.path.dirname(__file__)
 
-description = "Hosting Based Interfacing"
-
-with open(os.path.join(root, "README"), encoding="utf-8") as f:
-    long_description = "\n\n".join(f.read().split("\n\n")[1:])
+description = "Hosting Based Interface"
+long_description = r"""
+Hosting Based Interface
+=======================
+"""
 
 version = "??"
 with open(os.path.join(root, "hbi", "version.py"), encoding="utf-8") as f:
