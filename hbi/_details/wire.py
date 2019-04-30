@@ -185,22 +185,24 @@ class SocketWire(asyncio.Protocol):
         )
 
     def _take_data(self, chunk):
+        rcvb = self._recv_buffer
+
         # push to buffer
         if chunk:
-            self._recv_buffer.append(BytesBuffer(chunk))
+            rcvb.append(BytesBuffer(chunk))
 
         # feed as much buffered data as possible to data sink if one present
         while self._data_sink:
             # make sure data keep flowing in regarding lwm
-            if self._recv_buffer.nbytes <= self.wire_buf_low:
+            if rcvb.nbytes <= self.wire_buf_low:
                 self.transport.resume_reading()
 
-            if self._recv_buffer is None:
+            if rcvb is None:
                 # unexpected disconnect
                 self._data_sink(None)
                 return
 
-            chunk = self._recv_buffer.popleft()
+            chunk = rcvb.popleft()
             if not chunk:
                 # no more buffered data, wire is empty, return
                 return
@@ -210,7 +212,7 @@ class SocketWire(asyncio.Protocol):
             return  # disconnecting, nop
 
         # ctrl incoming flow regarding hwm/lwm
-        buffered_amount = self._recv_buffer.nbytes
+        buffered_amount = rcvb.nbytes
         if buffered_amount >= self.wire_buf_high:
             self.transport.pause_reading()
         elif buffered_amount <= self.wire_buf_low:
@@ -303,6 +305,8 @@ class SocketWire(asyncio.Protocol):
                     return True
 
     def _begin_offload(self, sink):
+        rcvb = self._recv_buffer
+
         if self._data_sink is not None:
             raise RuntimeError("HBI already offloading data")
         if not callable(sink):
@@ -310,12 +314,12 @@ class SocketWire(asyncio.Protocol):
                 "HBI sink to offload data must be a function accepting data chunks"
             )
         self._data_sink = sink
-        if self._recv_buffer.nbytes > 0:
+        if rcvb.nbytes > 0:
             # having buffered data, dump to sink
             while self._data_sink is sink:
-                chunk = self._recv_buffer.popleft()
+                chunk = rcvb.popleft()
                 # make sure data keep flowing in regarding lwm
-                if self._recv_buffer.nbytes <= self.wire_buf_low:
+                if rcvb.nbytes <= self.wire_buf_low:
                     self.transport.resume_reading()
                 if not chunk:
                     break
@@ -329,7 +333,3 @@ class SocketWire(asyncio.Protocol):
         self._data_sink = None
         if read_ahead:
             self._recv_buffer.appendleft(read_ahead)
-        # this should have been called from a receiving loop or coroutine,
-        # so return here, and the recv buffer kept being processed,
-        # or the coroutine proceed
-        pass

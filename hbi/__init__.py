@@ -10,6 +10,7 @@ Hosting Based Interfacing
 from .aio import *
 from .buflist import *
 from .bytesbuf import *
+from .co import *
 from .conn import *
 from .context import *
 from .ho import *
@@ -33,6 +34,9 @@ __all__ = [
 
     # exports from .bytesbuf
     'BytesBuffer',
+
+    # exports from .co
+    'Conver',
 
     # exports from .conn
     'HBIC', 'HBIS',
