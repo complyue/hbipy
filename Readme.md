@@ -31,6 +31,7 @@ if '__job_context__' == __name__:
         #job_data = np.empty(shape, dtype)
         # or any form as a binary stream
 
+        # hbi wire can receive binary streams very efficiently,
         # a single binary buffer or an iterator of binary buffers can be passed to
         # `co_recv_data()` so long as their summed bytes count matches that sent by
         # the peer endpoint
@@ -142,7 +143,10 @@ async def work_out(reconnect_wait=10):
 do_job({job.action!r}, {job.data_len!r})
 ''')
                         # the service method expects blob input,
-                        # hbi wire can send binary data very efficiently
+                        # hbi wire can send binary streams very efficiently,
+                        # a single binary buffer or an iterator of binary buffers can be passed to
+                        # `co.send_data()` so long as the peer endpoint has the meta info beforehand,
+                        # to infer correct data structure of summed bytes count.
                         await co.send_data(job.data)
 
                         # !! try best to avoid such synchronous service calls !!
