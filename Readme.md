@@ -13,6 +13,7 @@ if '__job_context__' == __name__:
     po2peer: hbi.PostingEnd = None
     ho4peer: hbi.HostingEnd = None
 
+    # get called when an hbi connection is made
     def __hbi_init__(po, ho):
         global po2peer: hbi.PostingEnd
         global ho4peer: hbi.HostingEnd
@@ -98,12 +99,10 @@ def has_more_jobs() -> bool:
         )
     )
 
-async def reschedule_job(job):
-    await job_queue.put(job)
-
 po2peer: hbi.PostingEnd = None
 ho4peer: hbi.HostingEnd = None
 
+# get called when an hbi connection is made
 def __hbi_init__(po, ho):
     global po2peer: hbi.PostingEnd
     global ho4peer: hbi.HostingEnd
