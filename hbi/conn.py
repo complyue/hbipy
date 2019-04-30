@@ -43,6 +43,8 @@ def __hbi_init__(po, ho):
 
     po2peer, ho4peer = po, ho
 
+# it's best for throughput to use such an asynchronous callback
+# to react to results of service calls.
 async def job_done(job_result):
     assert po2peer is not None and ho4peer is not None
     ...
@@ -215,11 +217,12 @@ if '__job_context__' == __name__:
         job_result = ...
         
         # !! try best to avoid such synchronous service calls !!
-        #await ho4peer.co_send_code(repr(job_result))
+        #await ho4peer.co_send_obj(repr(job_result))
         # !! this holds back throughput REALLY !!
 
-        # it's best for throughput to use po2peer to post asynchronous notification back to service consumer
-        await po2peer.notif(rf'''
+        # it's best for throughput to send asynchronous notification back
+        # to the service consumer
+        await ho4peer.co_send_code(rf'''
 job_done({job_result!r})
 ''')
 

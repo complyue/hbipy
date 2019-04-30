@@ -82,6 +82,13 @@ class HostingEnd:
             raise asyncio.InvalidStateError("No hosting conversation!")
 
         po = self.po
+        await po._send_code(code)
+
+    async def co_send_obj(self, code):
+        if self._ho_coid is None:
+            raise asyncio.InvalidStateError("No hosting conversation!")
+
+        po = self.po
         await po._send_code(code, b"co_recv")
 
     async def co_send_data(self, bufs):

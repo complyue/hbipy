@@ -84,6 +84,14 @@ class Conver:
         assert self is po._coq[-1], "co not tail of po's coq ?!"
         await po._send_code(code)
 
+    async def send_obj(self, code):
+        if self._begin_acked_fut is None:
+            raise asyncio.InvalidStateError("co_begin not yet sent!")
+
+        po = self._po
+        assert self is po._coq[-1], "co not tail of po's coq ?!"
+        await po._send_code(code, b"co_recv")
+
     async def send_data(self, bufs):
         if self._begin_acked_fut is None:
             raise asyncio.InvalidStateError("co_begin not yet sent!")
