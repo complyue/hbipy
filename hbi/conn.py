@@ -4,11 +4,12 @@ from typing import *
 
 from ._details import *
 from .ho import *
+from .log import *
 from .po import *
 
 __all__ = ["HBIC", "HBIS"]
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class HBIC:

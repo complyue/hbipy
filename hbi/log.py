@@ -32,7 +32,7 @@ def get_logger(name: str, root_name="hbi"):
 
     if name is None or name == "":
         name = root_name
-    elif not name.startswith(f"{root_name}."):
+    elif not name.startswith(f"{root_name}.") and name != root_name:
         raise ValueError(f"Root logger [{root_name}] is not parent of [{name}] !")
 
     return logging.getLogger(name)

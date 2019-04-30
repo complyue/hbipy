@@ -4,14 +4,13 @@ HBI Echo server and client
 """
 
 import asyncio
-import logging
 import sys
 
 from hbi import *
 from hbi import me
 from hbi.pool import pe
 
-logger = logging.getLogger(__package__)
+logger = get_logger(__package__)
 
 if "__hbi_serving__" == __name__:
     # modu run per HBI server initialization

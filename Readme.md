@@ -56,9 +56,9 @@ elif '__main__' == __name__:
             # the service context factory function
             lambda po, ho: runpy.run_module(
                 # use this module file for both service context and `python -m` entry point
-                mod_name=__name__,
+                mod_name = __package__,
                 # telling the module init purpose via run_name, i.e. the global __name__ value
-                run_name='__job_context__',
+                run_name = '__job_context__',
             ),  # create an isolated context for each consumer connection
         )
         await hbis.serve_until_closed()

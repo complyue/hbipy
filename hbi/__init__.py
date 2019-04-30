@@ -17,7 +17,6 @@ from .ho import *
 from .interop import *
 from .log import *
 from .po import *
-from .pool import *
 from .proto import *
 from .sendctrl import *
 from .shell import *
@@ -27,7 +26,7 @@ from .version import *
 __all__ = [
 
     # exports from .aio
-    'run_aio_servers', 'handle_signals',
+    'CancellableQueue', 'run_aio_servers', 'handle_signals',
 
     # exports from .buflist
     'BufferList',
@@ -55,9 +54,6 @@ __all__ = [
 
     # exports from .po
     'PostingEnd',
-
-    # exports from .pool
-    'ServiceMaster', 'PoolMaster', 'ProcWorker', 'ServiceConsumer',
 
     # exports from .proto
     'PACK_HEADER_MAX',

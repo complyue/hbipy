@@ -4,19 +4,18 @@ Adhoc mode runner for HBI module
 """
 
 import asyncio
-import logging
 import runpy
 import socket
 import sys
 
 import hbi
+
 from . import me
 
 __all__ = ()
 
-assert "__main__" == __name__
 
-logger = logging.getLogger(__package__)
+logger = hbi.get_logger(__package__)
 
 
 def print_usage():
