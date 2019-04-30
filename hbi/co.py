@@ -17,6 +17,7 @@ class Conver:
     def __init__(self, po):
         self._po = po
 
+        self._end_sent_fut = asyncio.get_running_loop().create_future()
         self._begin_acked_fut = None
         self._end_acked_fut = None
 
@@ -42,8 +43,7 @@ class Conver:
         po = self._po
         if po._coq:
             last_co = po._coq[-1]
-            if last_co._end_acked_fut is not None:
-                raise asyncio.InvalidStateError("po has a co open!")
+            await last_co._end_sent_fut
 
         self._begin_acked_fut = asyncio.get_running_loop().create_future()
 
@@ -117,7 +117,7 @@ class Conver:
             raise asyncio.InvalidStateError("co_end already sent!")
 
         po = self._po
-        assert self in po._coq, "co not in po's coq ?!"
+        assert self is po._coq[-1], "open co not the tail of po's coq ?!"
 
         self._end_acked_fut = asyncio.get_running_loop().create_future()
 

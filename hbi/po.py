@@ -25,7 +25,7 @@ class PostingEnd:
         self._conn_fut = asyncio.get_running_loop().create_future()
         self._disc_fut = None
 
-        self._send_mutex = SendCtrl()
+        self._send_ctrl = SendCtrl()
         self._coq = deque()
 
     @property
@@ -41,7 +41,7 @@ class PostingEnd:
         await self._conn_fut
 
     async def notif(self, code):
-        async with self._send_mutex:
+        async with self.co():
             await self._send_code(code)
 
     async def notif_data(self, code, bufs):
@@ -128,13 +128,13 @@ class PostingEnd:
 
         # check connected & wait for flowing for each code packet
         wire = self.connected_wire()
-        await self._send_mutex.flowing()
+        await self._send_ctrl.flowing()
         wire.transport.writelines([b"[%d#%s]" % (len(payload), wire_dir), payload])
 
     async def _send_buffer(self, buf):
         # check connected & wait for flowing for each single buffer
         wire = self.connected_wire()
-        await self._send_mutex.flowing()
+        await self._send_ctrl.flowing()
         wire.transport.write(buf)
 
     async def disconnect(self, err_reason=None, try_send_peer_err=True):
@@ -225,7 +225,7 @@ HBI {self.net_ident} disconnecting due to error:
     def _connected(self, net_ident):
         self.net_ident = net_ident
 
-        self._send_mutex.startup()
+        self._send_ctrl.startup()
 
         conn_fut = self._conn_fut
         assert conn_fut is not None, "?!"
@@ -250,7 +250,7 @@ HBI {self.net_ident} disconnecting due to error:
                 )
             )
 
-        self._send_mutex.shutdown(exc)
+        self._send_ctrl.shutdown(exc)
 
         disc_fut = self._disc_fut
         if disc_fut is None:
