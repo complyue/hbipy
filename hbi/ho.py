@@ -17,17 +17,8 @@ class HostingEnd:
 
     """
 
-    def __init__(self, po, app_queue_high: int = 100, app_queue_low: int = 50):
-        assert (
-            0 < app_queue_low < app_queue_high
-        ), f"Invalid app queue watermarks: {app_queue_low}~{app_queue_high}"
-        assert (
-            0 < wire_buf_low < wire_buf_high
-        ), f"Invalid wire buffer watermarks: {wire_buf_low}~{wire_buf_high}"
-
+    def __init__(self, po, app_queue_size: int = 100):
         self.po = po
-        self.app_queue_high = app_queue_high
-        self.app_queue_low = app_queue_low
 
         self._wire = None
         self.net_ident = "<unwired>"
@@ -37,12 +28,15 @@ class HostingEnd:
         self._conn_fut = asyncio.get_running_loop().create_future()
         self._disc_fut = None
 
-        # hosting thread and its task queue
+        # hosting green-thread
         self._hoth = None
-        self._hotq = asyncio.Queue()
+        # the event indicating a hosting task is running
+        self._hotr = asyncio.Event()
+        # the hosting task that is currently running
+        self._hott = None
 
         # queue for received objects
-        self._horq = asyncio.Queue()
+        self._horq = asyncio.Queue(app_queue_size)
 
         # for the active posting conversation
         # hold a reference to po._coq head during co_ack_begin/co_ack_end from remote peer
@@ -73,17 +67,12 @@ class HostingEnd:
         return obj
 
     async def _recv_obj(self):
-        if self._horq.qsize() <= self.app_queue_low:  # flow ctrl
-            self._wire.transport.resume_reading()
-
+        self._wire._check_resume()
         return await self._horq.get()
 
     async def co_recv_data(self, bufs):
         if self._ho_coid is None:
             raise asyncio.InvalidStateError("No hosting conversation!")
-
-        # TODO resume by low watermark
-        self._wire.transport.resume_reading()
 
         await self._recv_data(bufs)
 
@@ -185,37 +174,59 @@ HBI {self.net_ident} disconnecting due to error:
 
     async def _ho_thread(self):
         """
-        Use a green thread to guarantee serial execution of packets transfered over the wire.
+        Use a green-thread to guarantee serial execution of packets transfered over the wire.
 
-        Though the code from a packet can spawn new threads by calling `asyncio.create_task()` during landing.
+        Though the code from a packet can spawn new green-threads by calling `asyncio.create_task()`
+        during landing.
 
         """
 
-        while True:  # run each queued coro in order
+        hotr = self._hotr
+        wire = self._wire
+        while True:
             try:
-                coro = await self._hotq.get()
-            except asyncio.CancelledError:  # until disconnected
+                await hotr.wait()
+            except asyncio.CancelledError:
                 assert (
                     self._disc_fut is not None
-                ), "hotq fetching cancelled while not disconnecting ?!"
+                ), "hosting thread cancelled while not disconnecting ?!"
                 break
-            try:
-                # run this coro by awaiting it
-                await coro
-            except asyncio.CancelledError:
-                if self._disc_fut is not None:
-                    # disconnecting, stop this hosting thread
-                    break
-                logger.warning(
-                    f"HBI {self.net_ident!s} a hosted task cancelled: {coro}",
-                    exc_info=True,
-                )
-            except Exception as exc:
-                logger.error(
-                    f"HBI {self.net_ident!s} a hosted task failed: {coro}",
-                    exc_info=True,
-                )
-                self.disconnect(exc)
+
+            while wire._land_one():  # consume as much from wire buffer
+
+                coro = self._hott
+                if coro is None:  # no coroutine to run from last packet landing
+                    continue  # proceed to land next packet
+                self._hott = None
+
+                try:
+
+                    await coro  # run the coroutine by awaiting it
+
+                except asyncio.CancelledError:
+                    if self._disc_fut is not None:
+                        # disconnecting, stop hosting thread
+                        break
+
+                    logger.warning(
+                        f"HBI {self.net_ident!s} a hosted task cancelled: {coro}",
+                        exc_info=True,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        f"HBI {self.net_ident!s} a hosted task failed: {coro}",
+                        exc_info=True,
+                    )
+                    self.disconnect(exc)
+                    # self._hoth task (which is running this function) should have been cancelled,
+                    # as part of the disconnection, next await on hotr should get CancelledError,
+                    # then return out.
+
+                    # todo: opt to return immediately here ?
+                    # return
+
+            # no more packet to land atm, wait for new data arrival
+            hotr.clear()
 
     async def _ack_co_begin(self, coid: str):
         if self._ho_coid is not None:
@@ -256,43 +267,53 @@ HBI {self.net_ident} disconnecting due to error:
         if self._po_co is None and self._ho_coid is None:
             raise asyncio.InvalidStateError("No conversation to recv!")
 
+        if self._horq.full():
+            self._wire._check_pause()
+
         if inspect.isawaitable(obj):
             obj = await obj
 
-        rq = self._horq
-        rq.put_nowait(obj)
-
-        if rq.qsize() >= self.app_queue_high:  # flow ctrl
-            self._wire.transport.pause_reading()
+        await self._horq.put(obj)
 
     def _land_packet(self, code, wire_dir) -> Optional[tuple]:
+        assert (
+            self._hott is None
+        ), "landing new packet while last not finished running ?!"
+        assert not self._hotr.is_set(), "hotr set on landing new packet ?!"
+
         if "co_begin" == wire_dir:
 
-            self._hotq.put_nowait(self._ack_co_begin(code))
+            self._hott = self._ack_co_begin(code)
+            self._hotr.set()
 
         elif "co_recv" == wire_dir:
             # peer is sending a result object to be received by this end
 
             landed = self._land_code(code)
-            self._hotq.put_nowait(self._co_recv_landed(landed))
+            self._hott = self._co_recv_landed(landed)
+            self._hotr.set()
 
         elif "co_send" == wire_dir:
             # peer is requesting this end to send landed result back
 
             landed = self._land_code(code)
-            self._hotq.put_nowait(self._co_send_back(landed))
+            self._hott = self._co_send_back(landed)
+            self._hotr.set()
 
         elif "co_end" == wire_dir:
 
-            self._hotq.put_nowait(self._ack_co_end(code))
+            self._hott = self._ack_co_end(code)
+            self._hotr.set()
 
         elif "co_ack_begin" == wire_dir:
 
-            self._hotq.put_nowait(self._co_begin_acked(code))
+            self._hott = self._co_begin_acked(code)
+            self._hotr.set()
 
         elif "co_ack_end" == wire_dir:
 
-            self._hotq.put_nowait(self._co_end_acked(code))
+            self._hott = self._co_end_acked(code)
+            self._hotr.set()
 
         elif "err" == wire_dir:
             # peer error
@@ -301,8 +322,9 @@ HBI {self.net_ident} disconnecting due to error:
 
         else:
 
-            exc = RuntimeError(f"HBI unknown wire directive [{wire_dir}]")
-            self._handle_landing_error(exc)
+            self._handle_landing_error(
+                RuntimeError(f"HBI unknown wire directive [{wire_dir}]")
+            )
 
     def _land_code(self, code):
         # allow customization of code landing
@@ -352,6 +374,8 @@ HBI {self.net_ident}, error landing code:
             raise
 
     async def _recv_data(self, bufs):
+        self._wire._check_resume()
+
         fut = asyncio.get_running_loop().create_future()
 
         # use a generator function to pull all buffers from hierarchy
@@ -460,7 +484,7 @@ HBI {self.net_ident}, error landing code:
             maybe_coro = peer_done_cb()
             if inspect.iscoroutine(maybe_coro):
                 # the callback is a coroutine, assuming the socket should not be closed on peer eof
-                self._hotq.put_nowait(maybe_coro)
+                asyncio.get_running_loop().create_task(maybe_coro)
                 return True
             else:
                 # the callback is not coroutine, its return value should reflect its intent
@@ -508,13 +532,8 @@ HBI {self.net_ident}, error landing code:
         if disconn_cb is not None:
             maybe_coro = disconn_cb(exc)
             if inspect.iscoroutine(maybe_coro):
-                self._hotq.put_nowait(maybe_coro)
+                asyncio.get_running_loop().create_task(maybe_coro)
 
-        ho_task = self._hot
-        if ho_task is not None:
-            # stop hosting thread after all tasks finished
-
-            async def stop_ho_thread():
-                ho_task.cancel()
-
-            self._hotq.put_nowait(stop_ho_thread())
+        ho_thread = self._hoth
+        if ho_thread is not None:
+            ho_thread.cancel()

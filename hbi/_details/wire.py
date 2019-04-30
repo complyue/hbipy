@@ -75,7 +75,7 @@ class SocketWire(asyncio.Protocol):
         if ho is None:
             raise RuntimeError(f"Posting only connection received data ?!")
         assert ho._wire is self, "wire mismatch ?!"
-        self._data_received(chunk)
+        self._take_data(chunk)
 
     def eof_received(self):
         ho = self.ho
@@ -184,45 +184,55 @@ class SocketWire(asyncio.Protocol):
             "Socket transport other than tcp4/tcp6 not supported yet."
         )
 
-    def _data_received(self, chunk):
+    def _take_data(self, chunk):
         # push to buffer
         if chunk:
             self._recv_buffer.append(BytesBuffer(chunk))
 
-        while True:  # consume as much data as possible from wire
+        # feed as much buffered data as possible to data sink if one present
+        while self._data_sink:
+            # make sure data keep flowing in regarding lwm
+            if self._recv_buffer.nbytes <= self.wire_buf_low:
+                self.transport.resume_reading()
 
-            # feed as much buffered data as possible to data sink if present
-            while self._data_sink:
-                # make sure data keep flowing in regarding lwm
-                if self._recv_buffer.nbytes <= self.wire_buf_low:
-                    self.transport.resume_reading()
+            if self._recv_buffer is None:
+                # unexpected disconnect
+                self._data_sink(None)
+                return
 
-                if self._recv_buffer is None:
-                    # unexpected disconnect
-                    self._data_sink(None)
-                    return
+            chunk = self._recv_buffer.popleft()
+            if not chunk:
+                # no more buffered data, wire is empty, return
+                return
+            self._data_sink(chunk)
 
-                chunk = self._recv_buffer.popleft()
-                if not chunk:
-                    # no more buffered data, wire is empty, return
-                    return
-                self._data_sink(chunk)
+        if self._disc_fut is not None:
+            return  # disconnecting, nop
 
-            while True:
-                if self._disc_fut is not None:
-                    return
+        # ctrl incoming flow regarding hwm/lwm
+        buffered_amount = self._recv_buffer.nbytes
+        if buffered_amount >= self.wire_buf_high:
+            self.transport.pause_reading()
+        elif buffered_amount <= self.wire_buf_low:
+            self.transport.resume_reading()
 
-                # ctrl incoming flow regarding hwm/lwm
-                buffered_amount = self._recv_buffer.nbytes
-                if buffered_amount >= self.wire_buf_high:
-                    self.transport.pause_reading()
-                elif buffered_amount <= self.wire_buf_low:
-                    self.transport.resume_reading()
+        self.ho._hotr.set()
 
-                # land any packet available from wire
-                if not self._land_one():
-                    # no more packet to land
-                    return
+    def _check_pause(self):
+        # pause reading wrt lwm, when app queue is full
+        buffered_amount = self._recv_buffer.nbytes
+        if buffered_amount > self.wire_buf_low:
+            self.transport.pause_reading()
+            return True
+        return False
+
+    def _check_resume(self):
+        # check resume reading on wire reading activities
+        buffered_amount = self._recv_buffer.nbytes
+        if buffered_amount <= self.wire_buf_low:
+            self.transport.resume_reading()
+            return True
+        return False
 
     def _land_one(self) -> bool:
         while True:
@@ -230,7 +240,7 @@ class SocketWire(asyncio.Protocol):
                 return False  # no single full packet can be read from buffer
 
             chunk = self._recv_buffer.popleft()
-            if not chunk:
+            if not chunk:  # ignore empty buf in the buffer queue
                 continue
 
             while True:

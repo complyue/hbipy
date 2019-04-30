@@ -90,8 +90,7 @@ asyncio.run(work_out())
         addr,
         ctx,
         *,
-        app_queue_high: int = 200,
-        app_queue_low: int = 100,
+        app_queue_size: int = 200,
         wire_buf_high=50 * 1024 * 1024,
         wire_buf_low=10 * 1024 * 1024,
         net_opts: Optional[dict] = None,
@@ -99,8 +98,7 @@ asyncio.run(work_out())
         self.addr = addr
         self.ctx = ctx
 
-        self.app_queue_high = app_queue_high
-        self.app_queue_low = app_queue_low
+        self.app_queue_size = app_queue_size
         self.wire_buf_high = wire_buf_high
         self.wire_buf_low = wire_buf_low
         self.net_opts = net_opts if net_opts is not None else {}
@@ -146,7 +144,7 @@ asyncio.run(work_out())
             if self.ctx is None:  # posting only
                 ho = None
             else:
-                ho = HostingEnd(po, self.app_queue_high, self.app_queue_low)
+                ho = HostingEnd(po, self.app_queue_size)
                 ho.ctx = self.ctx
             return SocketWire(po, ho, self.wire_buf_high, self.wire_buf_low)
 
@@ -250,8 +248,7 @@ else:
         addr,
         context_factory,
         *,
-        app_queue_high: int = 100,
-        app_queue_low: int = 50,
+        app_queue_size: int = 100,
         wire_buf_high=20 * 1024 * 1024,
         wire_buf_low=6 * 1024 * 1024,
         net_opts: Optional[dict] = None,
@@ -259,8 +256,7 @@ else:
         self.addr = addr
         self.context_factory = context_factory
 
-        self.app_queue_high = app_queue_high
-        self.app_queue_low = app_queue_low
+        self.app_queue_size = app_queue_size
         self.wire_buf_high = wire_buf_high
         self.wire_buf_low = wire_buf_low
         self.net_opts = net_opts if net_opts is not None else {}
@@ -283,7 +279,7 @@ else:
 
         def ProtocolFactory():
             po = PostingEnd()
-            ho = HostingEnd(po, self.app_queue_high, self.app_queue_low)
+            ho = HostingEnd(po, self.app_queue_size)
             ho.ctx = self.context_factory(po=po, ho=ho)
             return SocketWire(po, ho, self.wire_buf_high, self.wire_buf_low)
 
