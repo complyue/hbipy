@@ -36,8 +36,8 @@ if '__job_context__' == __name__:
 
         # !! try best to avoid such synchronous service calls !!
         if POOR_THROUGHPUT:
-            # !! this holds back throughput REALLY !!
             await ho4peer.co_send_obj(repr(job_result))
+            # !! this holds down throughput REALLY !!
         else:
             # it's best for throughput to send asynchronous notification back
             # to the service consumer
@@ -78,7 +78,7 @@ def jobs_pending() -> bool:
     ...
 
 async def fetch_next_job():
-    # raises StopIteration
+    # raises StopIteration when all done
     ...
 
 async def reschedule_job(job):
@@ -120,7 +120,7 @@ do_job({job.action!r}, {job.data_len!r})
                         # !! try best to avoid such synchronous service calls !!
                         if POOR_THROUGHPUT:
                             job_result = await co.recv_obj()
-                            # !! this holds back throughput REALLY !!
+                            # !! this holds down throughput REALLY !!
 
                         job = None
         except StopIteration:  # raised by fetch_next_job()
