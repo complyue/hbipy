@@ -47,21 +47,21 @@ job_done({job_result!r})
 
 elif '__main__' == __name__:
 
-    serving_addr = {'host': '0.0.0.0', 'port': 1234}
+    serving_addr = {'host': '127.0.0.1', 'port': 3232}
 
     async def serve_jobs():
-        hbis = hbi.HBIS(
+        await hbi.HBIS(
             # listening IP address
             serving_addr,
-            # the service context factory function
+            # the service context factory function,
+            # create an isolated context for each consumer connection
             lambda po, ho: runpy.run_module(
                 # use this module file for both service context and `python -m` entry point
-                mod_name = __package__,
+                mod_name = __package__, # this module file needs to be `some/py_pkg/__main__.py`
                 # telling the module init purpose via run_name, i.e. the global __name__ value
                 run_name = '__job_context__',
-            ),  # create an isolated context for each consumer connection
-        )
-        await hbis.serve_until_closed()
+            ),
+        ).serve_until_closed()
 
     asyncio.run(serve_jobs())
 
@@ -73,20 +73,24 @@ elif '__main__' == __name__:
 
 import asyncio, hbi
 
+from some.job.source import gather_jobs
+
 POOR_THROUGHPUT = False
 
-def find_service(...):
+def find_service(locator):
     ...
+    return {'host': '127.0.0.1', 'port': 3232}
+
+jobs_queue = None
 
 def jobs_pending() -> bool:
-    ...
+    return jobs_queue is not None and not jobs_queue.empty()
 
 async def fetch_next_job():
-    # raises StopIteration when all done
-    ...
+    return await jobs_queue.get()
 
 async def reschedule_job(job):
-    ...
+    await job_queue.put(job)
 
 po2peer: hbi.PostingEnd = None
 ho4peer: hbi.HostingEnd = None
@@ -101,9 +105,16 @@ def __hbi_init__(po, ho):
 # to react to results of service calls.
 async def job_done(job_result):
     assert po2peer is not None and ho4peer is not None
-    ...
+    print('Job done:', job_result)
 
-async def work_out():
+async def work_out(reconnect_wait=10):
+    global jobs_queue
+    # create the jobs queue within a coroutine, for its constructor to use
+    # the correct loop associated with the os thread running it
+    jobs_queue = asyncio.Queue()
+    # spawn a new concurrent green thread to gather jobs
+    asyncio.create_task(gather_jobs(jobs_queue))
+
     service_addr = find_service(...)
     react_context = globals()
     hbic = hbi.HBIC(service_addr, react_context)
@@ -127,14 +138,12 @@ do_job({job.action!r}, {job.data_len!r})
                             # !! this holds down throughput REALLY !!
 
                         job = None
-        except StopIteration:  # raised by fetch_next_job()
-            break  # all jobs done
         except Exception:
             logger.error("Distributed job failure, retrying ...", exc_info=True)
             if job is not None:
                 await reschedule_job(job)
                 job = None
-            await asyncio.sleep(RECONNECT_WAIT)
+            await asyncio.sleep(reconnect_wait)
 
 asyncio.run(work_out())
 
