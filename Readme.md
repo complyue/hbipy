@@ -45,16 +45,20 @@ if '__job_context__' == __name__:
 job_done({job_result!r})
 ''')
 
-else:
+elif '__main__' == __name__:
 
     serving_addr = {'host': '0.0.0.0', 'port': 1234}
 
     async def serve_jobs():
         hbis = hbi.HBIS(
+            # listening IP address
             serving_addr,
+            # the service context factory function
             lambda po, ho: runpy.run_module(
-                mod_name=__name__,  # reuse this module file
-                run_name='__job_context__',  # distinguish by run_name
+                # use this module file for both service context and `python -m` entry point
+                mod_name=__name__,
+                # telling the module init purpose via run_name, i.e. the global __name__ value
+                run_name='__job_context__',
             ),  # create an isolated context for each consumer connection
         )
         await hbis.serve_until_closed()
