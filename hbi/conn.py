@@ -89,8 +89,8 @@ class HBIC:
             # TCP socket
             transport, wire = await loop.create_connection(
                 ProtocolFactory,
-                host=addr.get("host", None),
-                port=addr.get("port", None),  # let os assign a port
+                host=addr.get("host", "127.0.0.1"),
+                port=addr.get("port", 3232),
                 **self.net_opts,
             )
         self._wire = wire
@@ -165,8 +165,8 @@ class HBIS:
             # TCP socket
             self._server = await loop.create_server(
                 ProtocolFactory,
-                host=addr.get("host", None),
-                port=addr.get("port", None),  # let os assign a port
+                host=addr.get("host", "127.0.0.1"),
+                port=addr.get("port", 3232),
                 **self.net_opts,
             )
 
