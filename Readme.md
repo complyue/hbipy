@@ -19,28 +19,35 @@ if '__job_context__' == __name__:
 
         po2peer, ho4peer = po, ho
 
+    # this is the service method doing its job
+    # it's called by service consumer as scripted through hbi wire
     async def do_job(action, data_len):
-        global po2peer: hbi.PostingEnd
-        global ho4peer: hbi.HostingEnd
+        # this method expects binary input in addition to vanilla args (the `action` arg e.g.)
 
-        # can be plain binary blob
+        # which can be received as plain blob
         job_data = bytearray(data_len)
         # or numpy array with shape&dtype infered from data_len
         #shape, dtype = data_len
         #job_data = np.empty(shape, dtype)
+        # or any form as a binary stream
 
+        # a single binary buffer or an iterator of binary buffers can be passed to
+        # `co_recv_data()` so long as their summed bytes count matches that sent by
+        # the peer endpoint
         await ho4peer.co_recv_data(job_data)
 
-        # use action/job_data
+        # use all inputs, i.e. action/job_data
         job_result = ...
 
         # !! try best to avoid such synchronous service calls !!
         if POOR_THROUGHPUT:
+            # send back the code snippet of result, which will be landed by peer hosting endpoint,
+            # and the eval result received by consumer application via `await co.recv_obj()`
             await ho4peer.co_send_obj(repr(job_result))
             # !! this holds down throughput REALLY !!
         else:
             # it's best for throughput to send asynchronous notification back
-            # to the service consumer
+            # to the service consumer context
             await ho4peer.co_send_code(rf'''
 job_done({job_result!r})
 ''')
@@ -81,13 +88,14 @@ def find_service(locator):
     ...
     return {'host': '127.0.0.1', 'port': 3232}
 
-jobs_queue = None
+jobs_queue, all_jobs_done = None, None
 
-def jobs_pending() -> bool:
-    return jobs_queue is not None and not jobs_queue.empty()
-
-async def fetch_next_job():
-    return await jobs_queue.get()
+def has_more_jobs() -> bool:
+    return not (
+        jobs_queue is None or (
+            jobs_queue.empty() and all_jobs_done.is_set()
+        )
+    )
 
 async def reschedule_job(job):
     await job_queue.put(job)
@@ -108,28 +116,33 @@ async def job_done(job_result):
     print('Job done:', job_result)
 
 async def work_out(reconnect_wait=10):
-    global jobs_queue
-    # create the jobs queue within a coroutine, for its constructor to use
-    # the correct loop associated with the os thread running it
-    jobs_queue = asyncio.Queue()
+    global jobs_queue, all_jobs_done
+    # create the job queue and done event within a coroutine, for them to have
+    # the correct loop associated as from the os thread running it
+    jobs_queue = asyncio.Queue(100)
+    all_jobs_done = asyncio.Event()
     # spawn a new concurrent green thread to gather jobs
-    asyncio.create_task(gather_jobs(jobs_queue))
+    asyncio.create_task(gather_jobs(jobs_queue, all_jobs_done))
 
     service_addr = find_service(...)
     react_context = globals()
-    hbic = hbi.HBIC(service_addr, react_context)
 
-    while jobs_pending():
-        job = None
+    job = None
+    while job is not None or has_more_jobs():
+        hbic = hbi.HBIC(service_addr, react_context)  # define the service connection
         try:
-            async with hbic as po:
-                while job is not None or jobs_pending():
+            # connect the service, get the posting endpoint
+            async with hbic as po:  # auto close hbic as a context manager
+                while job is not None or has_more_jobs():
                     if job is None:
-                        job = await fetch_next_job()
-                    async with po.co() as co:
+                        job = await jobs_queue.get()
+                    async with po.co() as co:  # establish a service conversation
+                        # call service method `do_job()`
                         await co.send_code(rf'''
 do_job({job.action!r}, {job.data_len!r})
 ''')
+                        # the service method expects blob input,
+                        # hbi wire can send binary data very efficiently
                         await co.send_data(job.data)
 
                         # !! try best to avoid such synchronous service calls !!
@@ -137,12 +150,9 @@ do_job({job.action!r}, {job.data_len!r})
                             job_result = await co.recv_obj()
                             # !! this holds down throughput REALLY !!
 
-                        job = None
+                        job = None  # this job done
         except Exception:
-            logger.error("Distributed job failure, retrying ...", exc_info=True)
-            if job is not None:
-                await reschedule_job(job)
-                job = None
+            logger.error("Failed job processing over connection {hbic.net_ident!s}, retrying ...", exc_info=True)
             await asyncio.sleep(reconnect_wait)
 
 asyncio.run(work_out())
