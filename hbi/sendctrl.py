@@ -4,7 +4,7 @@ from collections import deque
 __all__ = ["SendCtrl"]
 
 
-class SendCtrl(asyncio.Lock):
+class SendCtrl:
     """
     """
 

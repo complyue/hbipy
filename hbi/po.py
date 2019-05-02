@@ -3,7 +3,7 @@ import inspect
 from collections import deque
 from typing import *
 
-from .co import *
+from .co import PoCo
 from .log import *
 from .sendctrl import SendCtrl
 
@@ -17,6 +17,8 @@ class PostingEnd:
     HBI posting endpoint
 
     """
+
+    __slots__ = ("_wire", "net_ident", "_conn_fut", "_disc_fut", "_send_ctrl", "_coq")
 
     def __init__(self):
         self._wire = None
@@ -51,27 +53,7 @@ class PostingEnd:
                 await self._send_data(bufs)
 
     def co(self):
-        co = Conver(self)
-        return co
-
-    def _co_begin_acked(self, coid):
-        if not self._coq:
-            raise asyncio.InvalidStateError("No po co to ack?!")
-        co = self._coq[0]
-        if id(co) != coid:
-            raise asyncio.InvalidStateError(
-                f"Mismatch coid at po end: [{coid}] vs [{id(co)}]"
-            )
-        co._begin_acked(coid)
-        return co
-
-    def _co_end_acked(self, coid):
-        co = self._coq.popleft()
-        if id(co) != coid:
-            raise asyncio.InvalidStateError(
-                f"Mismatch coid at po end: [{coid}] vs [{id(co)}]"
-            )
-        co._end_acked(coid)
+        co = PoCo(self)
         return co
 
     async def _send_code(self, code, wire_dir=b""):

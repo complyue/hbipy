@@ -1,5 +1,6 @@
 import asyncio
 import socket
+import traceback
 from typing import *
 
 from ._details import *
@@ -17,6 +18,16 @@ class HBIC:
     HBI client over a socket
 
     """
+
+    __slots__ = (
+        "addr",
+        "ctx",
+        "app_queue_size",
+        "wire_buf_high",
+        "wire_buf_low",
+        "net_opts",
+        "_wire",
+    )
 
     def __init__(
         self,
@@ -55,8 +66,6 @@ class HBIC:
         if exc_type is None:
             err_reason = None
         else:
-            import traceback
-
             err_msg = str(exc_type) + ":" + str(exc_val)
             err_stack = "".join(traceback.format_exception(exc_type, exc_val, exc_tb))
             err_reason = err_msg + "\n" + err_stack
@@ -116,6 +125,16 @@ class HBIS:
     HBI server over sockets
 
     """
+
+    __slots__ = (
+        "addr",
+        "context_factory",
+        "app_queue_size",
+        "wire_buf_high",
+        "wire_buf_low",
+        "net_opts",
+        "_server",
+    )
 
     def __init__(
         self,

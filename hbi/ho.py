@@ -4,6 +4,7 @@ from typing import *
 
 from ._details import *
 from .aio import *
+from .co import HoCo
 from .context import run_in_context
 from .log import *
 
@@ -17,6 +18,20 @@ class HostingEnd:
     HBI hosting endpoint
 
     """
+
+    __slots__ = (
+        "po",
+        "_wire",
+        "net_ident",
+        "_ctx",
+        "_conn_fut",
+        "_disc_fut",
+        "_hoth",
+        "_hotr",
+        "_hott",
+        "_horq",
+        "co",
+    )
 
     def __init__(self, po, app_queue_size: int = 100):
         self.po = po
@@ -39,13 +54,8 @@ class HostingEnd:
         # queue for received objects
         self._horq = CancellableQueue(app_queue_size)
 
-        # for the active posting conversation
-        # hold a reference to po._coq head during co_ack_begin/co_ack_end from remote peer
-        self._po_co = None
-
-        # for the passive hosting conversation
-        # hold the coid value during co_begin/co_end from remote peer
-        self._ho_coid = None
+        # current hosting conversation
+        self.co = None
 
     @property
     def ctx(self):
@@ -61,42 +71,9 @@ class HostingEnd:
     async def connected(self):
         await self._conn_fut
 
-    async def co_recv_obj(self):
-        obj = await self._recv_obj()
-        if self._ho_coid is None:
-            raise asyncio.InvalidStateError(f"Object received out of conversation!")
-        return obj
-
     async def _recv_obj(self):
         self._wire._check_resume()
         return await self._horq.get()
-
-    async def co_recv_data(self, bufs):
-        if self._ho_coid is None:
-            raise asyncio.InvalidStateError("No hosting conversation!")
-
-        await self._recv_data(bufs)
-
-    async def co_send_code(self, code):
-        if self._ho_coid is None:
-            raise asyncio.InvalidStateError("No hosting conversation!")
-
-        po = self.po
-        await po._send_code(code)
-
-    async def co_send_obj(self, code):
-        if self._ho_coid is None:
-            raise asyncio.InvalidStateError("No hosting conversation!")
-
-        po = self.po
-        await po._send_code(code, b"co_recv")
-
-    async def co_send_data(self, bufs):
-        if self._ho_coid is None:
-            raise asyncio.InvalidStateError("No hosting conversation!")
-
-        po = self.po
-        await p._send_data(bufs)
 
     async def disconnect(self, err_reason=None, try_send_peer_err=True):
         _wire = self._wire
@@ -237,34 +214,47 @@ HBI {self.net_ident} disconnecting due to error:
             hotr.clear()
 
     async def _ack_co_begin(self, coid: str):
-        if self._ho_coid is not None:
+        if self.co is not None:
             raise asyncio.InvalidStateError("Unclean co_begin!")
-        else:
-            await self.po._send_text(coid, b"co_ack_begin")
-            self._ho_coid = coid
+
+        po = self.po
+        coq = po._coq
+        while coq:
+            tail_co = coq[-1]
+            if tail_co.is_ended():
+                break
+            await tail_co.wait_ended()
+
+        co = HoCo(self, coid)
+        coq.append(co)
+        self.co = co
+        await po._send_text(coid, b"co_ack_begin")
 
     async def _ack_co_end(self, coid: str):
-        if self._ho_coid != coid:
-            raise asyncio.InvalidStateError("Unclean co_end!")
-        else:
-            await self.po._send_text(coid, b"co_ack_end")
-            self._ho_coid = None
+        co = self.co
+        if co.coid != coid:
+            raise asyncio.InvalidStateError("Mismatch co_end!")
+
+        po = self.po
+        coq = po._coq
+        tail_co = coq.pop()
+        assert co is tail_co, "ho co not tail of po's coq ?!"
+
+        co._send_done_fut.set_result(coid)
+        await po._send_text(coid, b"co_ack_end")
+        self.co = None
 
     async def _co_begin_acked(self, coid: str):
-        if self._po_co is not None:
-            raise asyncio.InvalidStateError("Unclean co_ack_begin!")
-
-        self._po_co = self.po._co_begin_acked(coid)
+        co = self.po._coq[0]
+        if co.coid != coid:
+            raise asyncio.InvalidStateError(f"Mismatch coid!")
+        co._begin_acked(coid)
 
     async def _co_end_acked(self, coid: str):
-        if self._po_co is None:
-            raise asyncio.InvalidStateError("Unclean co_ack_end!")
-
-        co = self.po._co_end_acked(coid)
-        if co is not self._po_co:
-            raise asyncio.InvalidStateError("Mismatched co_ack_end!")
-
-        self._po_co = None
+        co = self.po._coq.popleft()
+        if co.coid != coid:
+            raise asyncio.InvalidStateError(f"Mismatch coid!")
+        co._end_acked(coid)
 
     async def _co_send_back(self, obj):
         if inspect.isawaitable(obj):
@@ -272,8 +262,8 @@ HBI {self.net_ident} disconnecting due to error:
         await self._send_text(repr(obj), b"co_recv")
 
     async def _co_recv_landed(self, obj):
-        if self._po_co is None and self._ho_coid is None:
-            raise asyncio.InvalidStateError("No conversation to recv!")
+        if self.co is None:
+            raise asyncio.InvalidStateError("No conversation for recv!")
 
         if self._horq.full():
             self._wire._check_pause()
@@ -471,9 +461,9 @@ HBI {self.net_ident}, error landing code:
 
     # should be called by wire protocol
     def _peer_eof(self):
-        if self._po_co is not None or self._ho_coid is not None:
+        if self.co is not None:
             exc = asyncio.InvalidStateError(
-                "Premature peer EOF before conversation ended."
+                "Premature peer EOF before hosting conversation ended."
             )
             self.disconnect(exc)  # trigger disconnection
             return False
